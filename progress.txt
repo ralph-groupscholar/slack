@@ -1,0 +1,69 @@
+## Iteration 4 - February 5, 2026
+
+**Built:** Initialized Rust build system with minimal binary entrypoint.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Decide UI approach and implement basic window rendering.
+
+## Iteration 5 - February 5, 2026
+
+**Built:** Added a minimal native window using winit to validate basic UI rendering.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Choose a rendering layer (egui or wgpu) and draw a placeholder message list.
+
+## Iteration 6 - February 5, 2026
+
+**Built:** Integrated egui + wgpu and rendered a placeholder message list UI.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Add a lightweight message model and render from structured data (prep for real history).
+
+## Iteration 7 - February 5, 2026
+
+**Built:** Added a lightweight message model and rendered messages from structured data.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Introduce a local message store (SQLite schema) and load messages from it.
+
+## Iteration 8 - February 5, 2026
+
+**Built:** Added a local SQLite message store (schema + seed) and load messages from it at startup.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Add a minimal message composer and persist new messages into SQLite.
+
+## Iteration 9 - February 5, 2026
+
+**Built:** Added a message composer, inserted new messages into SQLite, and appended them to the in-memory list.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Improve composer UX (send on Enter + focus) and introduce channels/DM scaffolding.
+
+## Iteration 10 - February 5, 2026
+
+**Built:** Improved composer UX to send on Enter when focused and keep focus after sending.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Introduce channels/DM scaffolding.
+
+## Iteration 11 - February 5, 2026
+
+**Built:** Added channel/DM scaffolding with a sidebar, channel table, and per-channel message filtering.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Add per-channel composer placeholder metadata (typing indicator stub).
+
+## Iteration 12 - February 5, 2026
+
+**Built:** Added per-channel composer metadata with contextual placeholder text and a typing indicator stub.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Add WebSocket client scaffolding for real-time sync.
+
+## Iteration 13 - February 5, 2026
+
+**Built:** Added per-channel typing indicator state updates tied to recent local input and channel-specific drafts.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Add basic per-channel typing indicator state updates.
