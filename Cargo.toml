@@ -9,5 +9,7 @@ egui-wgpu = "0.27"
 egui-winit = "0.27"
 pollster = "0.3"
 rusqlite = { version = "0.31", features = ["bundled"] }
+tungstenite = "0.21"
+url = "2"
 wgpu = "0.19"
 winit = "0.29"
