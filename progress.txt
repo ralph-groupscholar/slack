@@ -74,3 +74,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
 **Next:** Hook WebSocket events into message send/receive flows.
+
+## Iteration 15 - February 5, 2026
+
+**Built:** Wired WebSocket send/receive into the message flow, persisted inbound messages, and reflected them in the UI.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Define a real message protocol and server integration for reliable sync.
+
+## Iteration 16 - February 5, 2026
+
+**Built:** Replaced the ad-hoc WebSocket payload with a JSON message envelope plus legacy fallback parsing for inbound sync.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Define the server-side sync contract and add a small local mock server for integration testing.

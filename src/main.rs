@@ -9,7 +9,8 @@ use std::{
 use egui_wgpu::{Renderer, ScreenDescriptor};
 use egui_winit::State as EguiWinitState;
 use rusqlite::{params, Connection};
-use tungstenite::connect;
+use serde::{Deserialize, Serialize};
+use tungstenite::{connect, Message as WsMessage};
 use url::Url;
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::{
@@ -82,12 +83,19 @@ impl RealtimeStatus {
 enum RealtimeCommand {
     Connect,
     Disconnect,
+    SendMessage {
+        author: String,
+        body: String,
+        sent_at: String,
+        channel_id: i64,
+    },
 }
 
 struct RealtimeEvent {
     status: RealtimeStatus,
     message: Option<String>,
     error: Option<String>,
+    inbound: Option<Message>,
 }
 
 struct RealtimeClient {
@@ -97,6 +105,70 @@ struct RealtimeClient {
     target_url: String,
     cmd_tx: mpsc::Sender<RealtimeCommand>,
     evt_rx: mpsc::Receiver<RealtimeEvent>,
+    incoming: Vec<Message>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RealtimePayload {
+    Message {
+        author: String,
+        body: String,
+        sent_at: String,
+        channel_id: i64,
+    },
+}
+
+impl RealtimePayload {
+    fn from_message(message: &Message) -> Self {
+        Self::Message {
+            author: message.author.clone(),
+            body: message.body.clone(),
+            sent_at: message.sent_at.clone(),
+            channel_id: message.channel_id,
+        }
+    }
+
+    fn into_message(self) -> Message {
+        match self {
+            RealtimePayload::Message {
+                author,
+                body,
+                sent_at,
+                channel_id,
+            } => Message {
+                author,
+                body,
+                sent_at,
+                channel_id,
+            },
+        }
+    }
+}
+
+fn encode_realtime_message(message: &Message) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&RealtimePayload::from_message(message))
+}
+
+fn parse_legacy_message(text: &str) -> Option<Message> {
+    let mut parts = text.splitn(4, '\t');
+    let author = parts.next()?;
+    let channel_id = parts.next()?.parse::<i64>().ok()?;
+    let sent_at = parts.next()?;
+    let body = parts.next().unwrap_or(text);
+    Some(Message {
+        author: author.to_string(),
+        body: body.to_string(),
+        sent_at: sent_at.to_string(),
+        channel_id,
+    })
+}
+
+fn decode_realtime_message(text: &str) -> Result<Message, String> {
+    match serde_json::from_str::<RealtimePayload>(text) {
+        Ok(payload) => Ok(payload.into_message()),
+        Err(err) => parse_legacy_message(text).ok_or_else(|| err.to_string()),
+    }
 }
 
 impl RealtimeClient {
@@ -111,6 +183,7 @@ impl RealtimeClient {
             target_url,
             cmd_tx,
             evt_rx,
+            incoming: Vec::new(),
         }
     }
 
@@ -122,12 +195,28 @@ impl RealtimeClient {
         let _ = self.cmd_tx.send(RealtimeCommand::Disconnect);
     }
 
+    fn send_message(&self, message: &Message) {
+        let _ = self.cmd_tx.send(RealtimeCommand::SendMessage {
+            author: message.author.clone(),
+            body: message.body.clone(),
+            sent_at: message.sent_at.clone(),
+            channel_id: message.channel_id,
+        });
+    }
+
     fn poll(&mut self) {
         while let Ok(event) = self.evt_rx.try_recv() {
             self.status = event.status;
             self.last_message = event.message;
             self.last_error = event.error;
+            if let Some(message) = event.inbound {
+                self.incoming.push(message);
+            }
         }
+    }
+
+    fn take_incoming(&mut self) -> Vec<Message> {
+        self.incoming.drain(..).collect()
     }
 }
 
@@ -141,54 +230,150 @@ fn spawn_realtime_worker(
         let mut socket: Option<
             tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
         > = None;
-        while let Ok(command) = cmd_rx.recv() {
-            match command {
-                RealtimeCommand::Connect => {
-                    if connected {
-                        continue;
+        loop {
+            match cmd_rx.recv_timeout(Duration::from_millis(16)) {
+                Ok(command) => match command {
+                    RealtimeCommand::Connect => {
+                        if connected {
+                            continue;
+                        }
+                        let _ = evt_tx.send(RealtimeEvent {
+                            status: RealtimeStatus::Connecting,
+                            message: Some(format!("Dialing {target_url}")),
+                            error: None,
+                            inbound: None,
+                        });
+                        match Url::parse(&target_url)
+                            .map_err(|err| err.to_string())
+                            .and_then(|url| {
+                                connect(url)
+                                    .map(|(socket, _response)| socket)
+                                    .map_err(|err| err.to_string())
+                            }) {
+                            Ok(mut ws) => {
+                                if let tungstenite::stream::MaybeTlsStream::Plain(stream) =
+                                    ws.get_mut()
+                                {
+                                    let _ = stream.set_nonblocking(true);
+                                }
+                                connected = true;
+                                socket = Some(ws);
+                                let _ = evt_tx.send(RealtimeEvent {
+                                    status: RealtimeStatus::Connected,
+                                    message: Some("Handshake complete".to_string()),
+                                    error: None,
+                                    inbound: None,
+                                });
+                            }
+                            Err(err) => {
+                                connected = false;
+                                socket = None;
+                                let _ = evt_tx.send(RealtimeEvent {
+                                    status: RealtimeStatus::Disconnected,
+                                    message: None,
+                                    error: Some(err),
+                                    inbound: None,
+                                });
+                            }
+                        }
                     }
-                    let _ = evt_tx.send(RealtimeEvent {
-                        status: RealtimeStatus::Connecting,
-                        message: Some(format!("Dialing {target_url}")),
-                        error: None,
-                    });
-                    match Url::parse(&target_url)
-                        .map_err(|err| err.to_string())
-                        .and_then(|url| {
-                            connect(url)
-                                .map(|(socket, _response)| socket)
-                                .map_err(|err| err.to_string())
-                        }) {
-                        Ok(ws) => {
-                            connected = true;
-                            socket = Some(ws);
-                            let _ = evt_tx.send(RealtimeEvent {
-                                status: RealtimeStatus::Connected,
-                                message: Some("Handshake complete".to_string()),
-                                error: None,
-                            });
+                    RealtimeCommand::Disconnect => {
+                        if let Some(mut ws) = socket.take() {
+                            let _ = ws.close(None);
+                        }
+                        connected = false;
+                        let _ = evt_tx.send(RealtimeEvent {
+                            status: RealtimeStatus::Disconnected,
+                            message: Some("Closed socket".to_string()),
+                            error: None,
+                            inbound: None,
+                        });
+                    }
+                    RealtimeCommand::SendMessage {
+                        author,
+                        body,
+                        sent_at,
+                        channel_id,
+                    } => {
+                        if let Some(ws) = socket.as_mut() {
+                            let message = Message {
+                                author,
+                                body,
+                                sent_at,
+                                channel_id,
+                            };
+                            match encode_realtime_message(&message) {
+                                Ok(payload) => {
+                                    if let Err(err) = ws.send(WsMessage::Text(payload)) {
+                                        connected = false;
+                                        socket = None;
+                                        let _ = evt_tx.send(RealtimeEvent {
+                                            status: RealtimeStatus::Disconnected,
+                                            message: None,
+                                            error: Some(err.to_string()),
+                                            inbound: None,
+                                        });
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = evt_tx.send(RealtimeEvent {
+                                        status: RealtimeStatus::Connected,
+                                        message: None,
+                                        error: Some(err.to_string()),
+                                        inbound: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+
+            if connected {
+                if let Some(ws) = socket.as_mut() {
+                    match ws.read() {
+                        Ok(msg) => {
+                            if let WsMessage::Text(text) = msg {
+                                match decode_realtime_message(&text) {
+                                    Ok(message) => {
+                                        let _ = evt_tx.send(RealtimeEvent {
+                                            status: RealtimeStatus::Connected,
+                                            message: Some("Message received".to_string()),
+                                            error: None,
+                                            inbound: Some(message),
+                                        });
+                                    }
+                                    Err(err) => {
+                                        let _ = evt_tx.send(RealtimeEvent {
+                                            status: RealtimeStatus::Connected,
+                                            message: None,
+                                            error: Some(err),
+                                            inbound: None,
+                                        });
+                                    }
+                                }
+                            }
                         }
                         Err(err) => {
-                            connected = false;
-                            socket = None;
-                            let _ = evt_tx.send(RealtimeEvent {
-                                status: RealtimeStatus::Disconnected,
-                                message: None,
-                                error: Some(err),
-                            });
+                            let io_blocked = matches!(
+                                err,
+                                tungstenite::Error::Io(ref io_err)
+                                    if io_err.kind() == std::io::ErrorKind::WouldBlock
+                            );
+                            if !io_blocked {
+                                connected = false;
+                                socket = None;
+                                let _ = evt_tx.send(RealtimeEvent {
+                                    status: RealtimeStatus::Disconnected,
+                                    message: None,
+                                    error: Some(err.to_string()),
+                                    inbound: None,
+                                });
+                            }
                         }
                     }
-                }
-                RealtimeCommand::Disconnect => {
-                    if let Some(mut ws) = socket.take() {
-                        let _ = ws.close(None);
-                    }
-                    connected = false;
-                    let _ = evt_tx.send(RealtimeEvent {
-                        status: RealtimeStatus::Disconnected,
-                        message: Some("Closed socket".to_string()),
-                        error: None,
-                    });
                 }
             }
         }
@@ -567,6 +752,7 @@ impl App {
 
     fn render(&mut self) {
         self.realtime.poll();
+        let incoming = self.realtime.take_incoming();
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
         let mut pending_send: Option<String> = None;
         let mut channel_switch: Option<i64> = None;
@@ -847,6 +1033,18 @@ impl App {
                 eprintln!("db insert error: {err}");
             }
             self.messages.push(message);
+            self.realtime.send_message(self.messages.last().expect("message"));
+        }
+
+        if !incoming.is_empty() {
+            for message in incoming {
+                if let Err(err) = insert_message(&self.db, &message) {
+                    eprintln!("db insert error: {err}");
+                }
+                if message.channel_id == self.selected_channel_id {
+                    self.messages.push(message);
+                }
+            }
         }
     }
 }
