@@ -116,6 +116,19 @@ enum RealtimePayload {
         body: String,
         sent_at: String,
         channel_id: i64,
+        client_id: Option<String>,
+    },
+    Auth {
+        token: String,
+        user: String,
+    },
+    Ack {
+        kind: String,
+        detail: String,
+    },
+    Presence {
+        user: String,
+        status: String,
     },
 }
 
@@ -126,22 +139,25 @@ impl RealtimePayload {
             body: message.body.clone(),
             sent_at: message.sent_at.clone(),
             channel_id: message.channel_id,
+            client_id: None,
         }
     }
 
-    fn into_message(self) -> Message {
+    fn into_message(self) -> Option<Message> {
         match self {
             RealtimePayload::Message {
                 author,
                 body,
                 sent_at,
                 channel_id,
-            } => Message {
+                client_id: _,
+            } => Some(Message {
                 author,
                 body,
                 sent_at,
                 channel_id,
-            },
+            }),
+            _ => None,
         }
     }
 }
@@ -164,10 +180,32 @@ fn parse_legacy_message(text: &str) -> Option<Message> {
     })
 }
 
-fn decode_realtime_message(text: &str) -> Result<Message, String> {
+enum RealtimeInbound {
+    Message(Message),
+    Signal(String),
+}
+
+fn decode_realtime_inbound(text: &str) -> Result<RealtimeInbound, String> {
     match serde_json::from_str::<RealtimePayload>(text) {
-        Ok(payload) => Ok(payload.into_message()),
-        Err(err) => parse_legacy_message(text).ok_or_else(|| err.to_string()),
+        Ok(payload) => match payload {
+            RealtimePayload::Message { .. } => Ok(RealtimeInbound::Message(
+                payload
+                    .into_message()
+                    .ok_or_else(|| "unexpected payload".to_string())?,
+            )),
+            RealtimePayload::Ack { kind, detail } => {
+                Ok(RealtimeInbound::Signal(format!("Ack: {kind} ({detail})")))
+            }
+            RealtimePayload::Presence { user, status } => Ok(RealtimeInbound::Signal(format!(
+                "Presence: {user} is {status}"
+            ))),
+            RealtimePayload::Auth { user, .. } => Ok(RealtimeInbound::Signal(format!(
+                "Auth received for {user}"
+            ))),
+        },
+        Err(err) => parse_legacy_message(text)
+            .map(RealtimeInbound::Message)
+            .ok_or_else(|| err.to_string()),
     }
 }
 
@@ -258,6 +296,35 @@ fn spawn_realtime_worker(
                                 }
                                 connected = true;
                                 socket = Some(ws);
+                                if let Some(ws) = socket.as_mut() {
+                                    let auth = RealtimePayload::Auth {
+                                        token: "local-dev".to_string(),
+                                        user: "you".to_string(),
+                                    };
+                                    match serde_json::to_string(&auth) {
+                                        Ok(payload) => {
+                                            if let Err(err) = ws.send(WsMessage::Text(payload)) {
+                                                connected = false;
+                                                socket = None;
+                                                let _ = evt_tx.send(RealtimeEvent {
+                                                    status: RealtimeStatus::Disconnected,
+                                                    message: None,
+                                                    error: Some(err.to_string()),
+                                                    inbound: None,
+                                                });
+                                                continue;
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let _ = evt_tx.send(RealtimeEvent {
+                                                status: RealtimeStatus::Connected,
+                                                message: None,
+                                                error: Some(err.to_string()),
+                                                inbound: None,
+                                            });
+                                        }
+                                    }
+                                }
                                 let _ = evt_tx.send(RealtimeEvent {
                                     status: RealtimeStatus::Connected,
                                     message: Some("Handshake complete".to_string()),
@@ -336,13 +403,21 @@ fn spawn_realtime_worker(
                     match ws.read() {
                         Ok(msg) => {
                             if let WsMessage::Text(text) = msg {
-                                match decode_realtime_message(&text) {
-                                    Ok(message) => {
+                                match decode_realtime_inbound(&text) {
+                                    Ok(RealtimeInbound::Message(message)) => {
                                         let _ = evt_tx.send(RealtimeEvent {
                                             status: RealtimeStatus::Connected,
                                             message: Some("Message received".to_string()),
                                             error: None,
                                             inbound: Some(message),
+                                        });
+                                    }
+                                    Ok(RealtimeInbound::Signal(signal)) => {
+                                        let _ = evt_tx.send(RealtimeEvent {
+                                            status: RealtimeStatus::Connected,
+                                            message: Some(signal),
+                                            error: None,
+                                            inbound: None,
                                         });
                                     }
                                     Err(err) => {
