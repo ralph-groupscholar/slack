@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::mpsc,
     sync::Arc,
     thread,
@@ -96,6 +96,7 @@ struct RealtimeEvent {
     message: Option<String>,
     error: Option<String>,
     inbound: Option<Message>,
+    presence: Option<PresenceUpdate>,
 }
 
 struct RealtimeClient {
@@ -106,6 +107,13 @@ struct RealtimeClient {
     cmd_tx: mpsc::Sender<RealtimeCommand>,
     evt_rx: mpsc::Receiver<RealtimeEvent>,
     incoming: Vec<Message>,
+    incoming_presence: Vec<PresenceUpdate>,
+}
+
+#[derive(Clone)]
+struct PresenceUpdate {
+    user: String,
+    status: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,6 +190,7 @@ fn parse_legacy_message(text: &str) -> Option<Message> {
 
 enum RealtimeInbound {
     Message(Message),
+    Presence { user: String, status: String },
     Signal(String),
 }
 
@@ -196,9 +205,10 @@ fn decode_realtime_inbound(text: &str) -> Result<RealtimeInbound, String> {
             RealtimePayload::Ack { kind, detail } => {
                 Ok(RealtimeInbound::Signal(format!("Ack: {kind} ({detail})")))
             }
-            RealtimePayload::Presence { user, status } => Ok(RealtimeInbound::Signal(format!(
-                "Presence: {user} is {status}"
-            ))),
+            RealtimePayload::Presence { user, status } => Ok(RealtimeInbound::Presence {
+                user,
+                status,
+            }),
             RealtimePayload::Auth { user, .. } => Ok(RealtimeInbound::Signal(format!(
                 "Auth received for {user}"
             ))),
@@ -222,6 +232,7 @@ impl RealtimeClient {
             cmd_tx,
             evt_rx,
             incoming: Vec::new(),
+            incoming_presence: Vec::new(),
         }
     }
 
@@ -250,11 +261,18 @@ impl RealtimeClient {
             if let Some(message) = event.inbound {
                 self.incoming.push(message);
             }
+            if let Some(presence) = event.presence {
+                self.incoming_presence.push(presence);
+            }
         }
     }
 
     fn take_incoming(&mut self) -> Vec<Message> {
         self.incoming.drain(..).collect()
+    }
+
+    fn take_presence(&mut self) -> Vec<PresenceUpdate> {
+        self.incoming_presence.drain(..).collect()
     }
 }
 
@@ -280,6 +298,7 @@ fn spawn_realtime_worker(
                             message: Some(format!("Dialing {target_url}")),
                             error: None,
                             inbound: None,
+                            presence: None,
                         });
                         match Url::parse(&target_url)
                             .map_err(|err| err.to_string())
@@ -311,6 +330,7 @@ fn spawn_realtime_worker(
                                                     message: None,
                                                     error: Some(err.to_string()),
                                                     inbound: None,
+                                                    presence: None,
                                                 });
                                                 continue;
                                             }
@@ -321,6 +341,7 @@ fn spawn_realtime_worker(
                                                 message: None,
                                                 error: Some(err.to_string()),
                                                 inbound: None,
+                                                presence: None,
                                             });
                                         }
                                     }
@@ -330,6 +351,7 @@ fn spawn_realtime_worker(
                                     message: Some("Handshake complete".to_string()),
                                     error: None,
                                     inbound: None,
+                                    presence: None,
                                 });
                             }
                             Err(err) => {
@@ -340,6 +362,7 @@ fn spawn_realtime_worker(
                                     message: None,
                                     error: Some(err),
                                     inbound: None,
+                                    presence: None,
                                 });
                             }
                         }
@@ -354,6 +377,7 @@ fn spawn_realtime_worker(
                             message: Some("Closed socket".to_string()),
                             error: None,
                             inbound: None,
+                            presence: None,
                         });
                     }
                     RealtimeCommand::SendMessage {
@@ -379,6 +403,7 @@ fn spawn_realtime_worker(
                                             message: None,
                                             error: Some(err.to_string()),
                                             inbound: None,
+                                            presence: None,
                                         });
                                     }
                                 }
@@ -388,6 +413,7 @@ fn spawn_realtime_worker(
                                         message: None,
                                         error: Some(err.to_string()),
                                         inbound: None,
+                                        presence: None,
                                     });
                                 }
                             }
@@ -410,6 +436,16 @@ fn spawn_realtime_worker(
                                             message: Some("Message received".to_string()),
                                             error: None,
                                             inbound: Some(message),
+                                            presence: None,
+                                        });
+                                    }
+                                    Ok(RealtimeInbound::Presence { user, status }) => {
+                                        let _ = evt_tx.send(RealtimeEvent {
+                                            status: RealtimeStatus::Connected,
+                                            message: Some(format!("Presence: {user} is {status}")),
+                                            error: None,
+                                            inbound: None,
+                                            presence: Some(PresenceUpdate { user, status }),
                                         });
                                     }
                                     Ok(RealtimeInbound::Signal(signal)) => {
@@ -418,6 +454,7 @@ fn spawn_realtime_worker(
                                             message: Some(signal),
                                             error: None,
                                             inbound: None,
+                                            presence: None,
                                         });
                                     }
                                     Err(err) => {
@@ -426,6 +463,7 @@ fn spawn_realtime_worker(
                                             message: None,
                                             error: Some(err),
                                             inbound: None,
+                                            presence: None,
                                         });
                                     }
                                 }
@@ -445,6 +483,7 @@ fn spawn_realtime_worker(
                                     message: None,
                                     error: Some(err.to_string()),
                                     inbound: None,
+                                    presence: None,
                                 });
                             }
                         }
@@ -641,6 +680,28 @@ fn insert_message(conn: &Connection, message: &Message) -> Result<(), rusqlite::
     Ok(())
 }
 
+fn load_channel_members(
+    conn: &Connection,
+    channels: &[Channel],
+) -> Result<HashMap<i64, HashSet<String>>, rusqlite::Error> {
+    let mut members: HashMap<i64, HashSet<String>> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT channel_id, author FROM messages")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (channel_id, author) = row?;
+        members.entry(channel_id).or_default().insert(author);
+    }
+    for channel in channels {
+        if channel.kind == ChannelKind::DirectMessage {
+            members
+                .entry(channel.id)
+                .or_default()
+                .insert(channel.name.clone());
+        }
+    }
+    Ok(members)
+}
+
 fn build_composer_meta(channels: &[Channel]) -> HashMap<i64, ComposerMeta> {
     let mut meta = HashMap::new();
     for channel in channels {
@@ -665,6 +726,48 @@ fn build_composer_meta(channels: &[Channel]) -> HashMap<i64, ComposerMeta> {
     meta
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PresenceStatus {
+    Online,
+    Away,
+    Offline,
+    Unknown,
+}
+
+impl PresenceStatus {
+    fn from_str(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "online" => PresenceStatus::Online,
+            "away" => PresenceStatus::Away,
+            "offline" => PresenceStatus::Offline,
+            _ => PresenceStatus::Unknown,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PresenceStatus::Online => "online",
+            PresenceStatus::Away => "away",
+            PresenceStatus::Offline => "offline",
+            PresenceStatus::Unknown => "unknown",
+        }
+    }
+
+    fn color(self) -> egui::Color32 {
+        match self {
+            PresenceStatus::Online => egui::Color32::from_rgb(120, 210, 120),
+            PresenceStatus::Away => egui::Color32::from_rgb(220, 180, 80),
+            PresenceStatus::Offline => egui::Color32::from_rgb(130, 140, 160),
+            PresenceStatus::Unknown => egui::Color32::from_rgb(120, 130, 150),
+        }
+    }
+}
+
+struct PresenceState {
+    status: PresenceStatus,
+    last_seen: Instant,
+}
+
 struct App {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -684,6 +787,8 @@ struct App {
     composer_meta: HashMap<i64, ComposerMeta>,
     typing_state: HashMap<i64, Instant>,
     realtime: RealtimeClient,
+    channel_members: HashMap<i64, HashSet<String>>,
+    presence_state: HashMap<String, PresenceState>,
 }
 
 impl App {
@@ -793,6 +898,21 @@ impl App {
                     .collect()
             }
         };
+        let channel_members = match load_channel_members(&db, &channels) {
+            Ok(members) => members,
+            Err(err) => {
+                eprintln!("db members load error: {err}");
+                HashMap::new()
+            }
+        };
+        let mut presence_state = HashMap::new();
+        presence_state.insert(
+            "you".to_string(),
+            PresenceState {
+                status: PresenceStatus::Online,
+                last_seen: Instant::now(),
+            },
+        );
 
         Self {
             window,
@@ -813,6 +933,8 @@ impl App {
             composer_meta,
             typing_state: HashMap::new(),
             realtime: RealtimeClient::new("ws://127.0.0.1:9001".to_string()),
+            channel_members,
+            presence_state,
         }
     }
 
@@ -828,10 +950,23 @@ impl App {
     fn render(&mut self) {
         self.realtime.poll();
         let incoming = self.realtime.take_incoming();
+        let presence_updates = self.realtime.take_presence();
+        if !presence_updates.is_empty() {
+            for update in presence_updates {
+                self.presence_state.insert(
+                    update.user,
+                    PresenceState {
+                        status: PresenceStatus::from_str(&update.status),
+                        last_seen: Instant::now(),
+                    },
+                );
+            }
+        }
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
         let mut pending_send: Option<String> = None;
         let mut channel_switch: Option<i64> = None;
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        let egui_ctx = self.egui_ctx.clone();
+        let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::SidePanel::left("channel_list")
                 .resizable(false)
                 .default_width(220.0)
@@ -844,13 +979,26 @@ impl App {
                         .iter()
                         .filter(|channel| channel.kind == ChannelKind::Channel)
                     {
-                        let label = format!("# {}", channel.name);
-                        if ui
-                            .selectable_label(self.selected_channel_id == channel.id, label)
-                            .clicked()
-                        {
-                            channel_switch = Some(channel.id);
-                        }
+                        ui.horizontal(|row| {
+                            let label = format!("# {}", channel.name);
+                            if row
+                                .selectable_label(self.selected_channel_id == channel.id, label)
+                                .clicked()
+                            {
+                                channel_switch = Some(channel.id);
+                            }
+                            let (online, total) = self.channel_presence_counts(channel.id);
+                            let summary = if total == 0 {
+                                "no members".to_string()
+                            } else {
+                                format!("{online}/{total} online")
+                            };
+                            row.label(
+                                egui::RichText::new(summary)
+                                    .small()
+                                    .color(egui::Color32::from_rgb(120, 130, 150)),
+                            );
+                        });
                     }
                     ui.add_space(8.0);
                     ui.label("Direct Messages");
@@ -859,13 +1007,26 @@ impl App {
                         .iter()
                         .filter(|channel| channel.kind == ChannelKind::DirectMessage)
                     {
-                        let label = format!("@{}", channel.name);
-                        if ui
-                            .selectable_label(self.selected_channel_id == channel.id, label)
-                            .clicked()
-                        {
-                            channel_switch = Some(channel.id);
-                        }
+                        ui.horizontal(|row| {
+                            let label = format!("@{}", channel.name);
+                            if row
+                                .selectable_label(self.selected_channel_id == channel.id, label)
+                                .clicked()
+                            {
+                                channel_switch = Some(channel.id);
+                            }
+                            let status = self.presence_for_user(&channel.name);
+                            row.label(
+                                egui::RichText::new("o")
+                                    .color(status.color())
+                                    .small(),
+                            );
+                            row.label(
+                                egui::RichText::new(status.label())
+                                    .small()
+                                    .color(status.color()),
+                            );
+                        });
                     }
                 });
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -921,6 +1082,13 @@ impl App {
                         );
                     }
                 });
+                if let Some(details) = self.channel_presence_details() {
+                    ui.label(
+                        egui::RichText::new(details)
+                            .small()
+                            .color(egui::Color32::from_rgb(120, 130, 150)),
+                    );
+                }
                 ui.separator();
                 for message in &self.messages {
                     ui.horizontal(|row| {
@@ -1107,6 +1275,7 @@ impl App {
             if let Err(err) = insert_message(&self.db, &message) {
                 eprintln!("db insert error: {err}");
             }
+            self.track_member(&message);
             self.messages.push(message);
             self.realtime.send_message(self.messages.last().expect("message"));
         }
@@ -1116,8 +1285,72 @@ impl App {
                 if let Err(err) = insert_message(&self.db, &message) {
                     eprintln!("db insert error: {err}");
                 }
+                self.track_member(&message);
                 if message.channel_id == self.selected_channel_id {
                     self.messages.push(message);
+                }
+            }
+        }
+    }
+}
+
+impl App {
+    fn track_member(&mut self, message: &Message) {
+        self.channel_members
+            .entry(message.channel_id)
+            .or_default()
+            .insert(message.author.clone());
+    }
+
+    fn presence_for_user(&self, user: &str) -> PresenceStatus {
+        self.presence_state
+            .get(user)
+            .map(|state| state.status)
+            .unwrap_or(PresenceStatus::Unknown)
+    }
+
+    fn channel_presence_counts(&self, channel_id: i64) -> (usize, usize) {
+        let members = match self.channel_members.get(&channel_id) {
+            Some(members) => members,
+            None => return (0, 0),
+        };
+        let total = members.len();
+        let online = members
+            .iter()
+            .filter(|member| self.presence_for_user(member) == PresenceStatus::Online)
+            .count();
+        (online, total)
+    }
+
+    fn channel_presence_details(&self) -> Option<String> {
+        let channel = self
+            .channels
+            .iter()
+            .find(|channel| channel.id == self.selected_channel_id)?;
+        match channel.kind {
+            ChannelKind::DirectMessage => {
+                let state = self.presence_state.get(&channel.name);
+                let status = state
+                    .map(|state| state.status)
+                    .unwrap_or(PresenceStatus::Unknown);
+                let detail = if let Some(state) = state {
+                    format!(
+                        "@{} is {} (updated {}s ago)",
+                        channel.name,
+                        status.label(),
+                        state.last_seen.elapsed().as_secs()
+                    )
+                } else {
+                    format!("@{} status: {}", channel.name, status.label())
+                };
+                Some(detail)
+            }
+            ChannelKind::Channel => {
+                let (online, total) = self.channel_presence_counts(channel.id);
+                if total == 0 {
+                    Some("No member activity yet.".to_string())
+                } else {
+                    Some(format!("{online}/{total} members online"))
                 }
             }
         }

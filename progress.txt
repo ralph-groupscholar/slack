@@ -102,3 +102,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, src/bin/mock_server.rs, PRD.md, progress.txt
 **Next:** Add real presence tracking UI and persist presence state for channels/DMs.
+
+## Iteration 19 - February 6, 2026
+
+**Built:** Added realtime presence state, channel/DM presence UI summaries, and online member counts with last update details.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Add message search UI backed by SQLite queries.
