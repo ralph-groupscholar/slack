@@ -109,3 +109,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Add message search UI backed by SQLite queries.
+
+## Iteration 20 - February 6, 2026
+
+**Built:** Added a SQLite-backed message search bar with channel-scoped filtering and search results rendering.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Add file attachment handling (ingest + render previews).
+
+## Iteration 21 - February 6, 2026
+
+**Built:** Added attachment drafting via local file paths, persisted attachment metadata, and rendered attachment previews in the message list.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Add richer attachment previews (image thumbnails) and inbound attachment handling.
