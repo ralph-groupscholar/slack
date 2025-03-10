@@ -137,3 +137,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
 **Next:** Add inline attachment actions (open/reveal) and consider async loading for large images.
+
+## Iteration 24 - February 6, 2026
+
+**Built:** Added inline attachment actions to open or reveal files from the message list.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Consider async loading for large image previews.
