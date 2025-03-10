@@ -9,6 +9,7 @@ use std::{
 
 use egui_wgpu::{Renderer, ScreenDescriptor};
 use egui_winit::State as EguiWinitState;
+use image::{imageops::FilterType, GenericImageView, ImageReader};
 use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 use tungstenite::{connect, Message as WsMessage};
@@ -90,6 +91,7 @@ enum RealtimeCommand {
         body: String,
         sent_at: String,
         channel_id: i64,
+        attachments: Vec<RealtimeAttachment>,
     },
 }
 
@@ -97,7 +99,7 @@ struct RealtimeEvent {
     status: RealtimeStatus,
     message: Option<String>,
     error: Option<String>,
-    inbound: Option<Message>,
+    inbound: Option<IncomingMessage>,
     presence: Option<PresenceUpdate>,
 }
 
@@ -108,7 +110,7 @@ struct RealtimeClient {
     target_url: String,
     cmd_tx: mpsc::Sender<RealtimeCommand>,
     evt_rx: mpsc::Receiver<RealtimeEvent>,
-    incoming: Vec<Message>,
+    incoming: Vec<IncomingMessage>,
     incoming_presence: Vec<PresenceUpdate>,
 }
 
@@ -116,6 +118,19 @@ struct RealtimeClient {
 struct PresenceUpdate {
     user: String,
     status: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RealtimeAttachment {
+    file_path: String,
+    file_name: String,
+    file_size: i64,
+    kind: String,
+}
+
+struct IncomingMessage {
+    message: Message,
+    attachments: Vec<RealtimeAttachment>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -127,6 +142,8 @@ enum RealtimePayload {
         sent_at: String,
         channel_id: i64,
         client_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<RealtimeAttachment>,
     },
     Auth {
         token: String,
@@ -143,17 +160,18 @@ enum RealtimePayload {
 }
 
 impl RealtimePayload {
-    fn from_message(message: &Message) -> Self {
+    fn from_message(message: &Message, attachments: Vec<RealtimeAttachment>) -> Self {
         Self::Message {
             author: message.author.clone(),
             body: message.body.clone(),
             sent_at: message.sent_at.clone(),
             channel_id: message.channel_id,
             client_id: None,
+            attachments,
         }
     }
 
-    fn into_message(self) -> Option<Message> {
+    fn into_message(self) -> Option<IncomingMessage> {
         match self {
             RealtimePayload::Message {
                 author,
@@ -161,39 +179,49 @@ impl RealtimePayload {
                 sent_at,
                 channel_id,
                 client_id: _,
-            } => Some(Message {
-                id: 0,
-                author,
-                body,
-                sent_at,
-                channel_id,
+                attachments,
+            } => Some(IncomingMessage {
+                message: Message {
+                    id: 0,
+                    author,
+                    body,
+                    sent_at,
+                    channel_id,
+                },
+                attachments,
             }),
             _ => None,
         }
     }
 }
 
-fn encode_realtime_message(message: &Message) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&RealtimePayload::from_message(message))
+fn encode_realtime_message(
+    message: &Message,
+    attachments: Vec<RealtimeAttachment>,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&RealtimePayload::from_message(message, attachments))
 }
 
-fn parse_legacy_message(text: &str) -> Option<Message> {
+fn parse_legacy_message(text: &str) -> Option<IncomingMessage> {
     let mut parts = text.splitn(4, '\t');
     let author = parts.next()?;
     let channel_id = parts.next()?.parse::<i64>().ok()?;
     let sent_at = parts.next()?;
     let body = parts.next().unwrap_or(text);
-    Some(Message {
-        id: 0,
-        author: author.to_string(),
-        body: body.to_string(),
-        sent_at: sent_at.to_string(),
-        channel_id,
+    Some(IncomingMessage {
+        message: Message {
+            id: 0,
+            author: author.to_string(),
+            body: body.to_string(),
+            sent_at: sent_at.to_string(),
+            channel_id,
+        },
+        attachments: Vec::new(),
     })
 }
 
 enum RealtimeInbound {
-    Message(Message),
+    Message(IncomingMessage),
     Presence { user: String, status: String },
     Signal(String),
 }
@@ -248,12 +276,13 @@ impl RealtimeClient {
         let _ = self.cmd_tx.send(RealtimeCommand::Disconnect);
     }
 
-    fn send_message(&self, message: &Message) {
+    fn send_message(&self, message: &Message, attachments: Vec<RealtimeAttachment>) {
         let _ = self.cmd_tx.send(RealtimeCommand::SendMessage {
             author: message.author.clone(),
             body: message.body.clone(),
             sent_at: message.sent_at.clone(),
             channel_id: message.channel_id,
+            attachments,
         });
     }
 
@@ -271,7 +300,7 @@ impl RealtimeClient {
         }
     }
 
-    fn take_incoming(&mut self) -> Vec<Message> {
+    fn take_incoming(&mut self) -> Vec<IncomingMessage> {
         self.incoming.drain(..).collect()
     }
 
@@ -389,6 +418,7 @@ fn spawn_realtime_worker(
                         body,
                         sent_at,
                         channel_id,
+                        attachments,
                     } => {
                         if let Some(ws) = socket.as_mut() {
                             let message = Message {
@@ -398,7 +428,7 @@ fn spawn_realtime_worker(
                                 sent_at,
                                 channel_id,
                             };
-                            match encode_realtime_message(&message) {
+                            match encode_realtime_message(&message, attachments) {
                                 Ok(payload) => {
                                     if let Err(err) = ws.send(WsMessage::Text(payload)) {
                                         connected = false;
@@ -846,6 +876,8 @@ struct App {
     attachment_path_drafts: HashMap<i64, String>,
     pending_attachments: HashMap<i64, Vec<PendingAttachment>>,
     attachment_error: Option<String>,
+    attachment_thumbnails: HashMap<String, egui::TextureHandle>,
+    attachment_thumbnail_errors: HashMap<String, String>,
 }
 
 impl App {
@@ -1011,6 +1043,8 @@ impl App {
             attachment_path_drafts: HashMap::new(),
             pending_attachments: HashMap::new(),
             attachment_error: None,
+            attachment_thumbnails: HashMap::new(),
+            attachment_thumbnail_errors: HashMap::new(),
         }
     }
 
@@ -1254,6 +1288,52 @@ impl App {
                     });
                     if let Some(attachments) = self.message_attachments.get(&message.id) {
                         for attachment in attachments {
+                            if attachment.kind == "image" {
+                                let thumbnail = if let Some(texture) =
+                                    self.attachment_thumbnails.get(&attachment.file_path)
+                                {
+                                    Some(texture)
+                                } else if self
+                                    .attachment_thumbnail_errors
+                                    .contains_key(&attachment.file_path)
+                                {
+                                    None
+                                } else {
+                                    match load_attachment_thumbnail(
+                                        &self.egui_ctx,
+                                        &attachment.file_path,
+                                    ) {
+                                        Ok(texture) => {
+                                            self.attachment_thumbnails
+                                                .insert(attachment.file_path.clone(), texture);
+                                            self.attachment_thumbnails.get(&attachment.file_path)
+                                        }
+                                        Err(err) => {
+                                            self.attachment_thumbnail_errors
+                                                .insert(attachment.file_path.clone(), err);
+                                            None
+                                        }
+                                    }
+                                };
+                                if let Some(texture) = thumbnail {
+                                    let sized =
+                                        egui::load::SizedTexture::from_handle(texture);
+                                    ui.add(
+                                        egui::Image::from_texture(sized)
+                                            .max_size(egui::Vec2::new(220.0, 160.0)),
+                                    );
+                                } else if let Some(err) =
+                                    self.attachment_thumbnail_errors.get(&attachment.file_path)
+                                {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Image preview unavailable: {err}"
+                                        ))
+                                        .small()
+                                        .color(egui::Color32::from_rgb(170, 140, 140)),
+                                    );
+                                }
+                            }
                             ui.horizontal(|row| {
                                 row.label(
                                     egui::RichText::new("[attachment]")
@@ -1614,6 +1694,8 @@ impl App {
             match insert_message(&self.db, &message) {
                 Ok(id) => {
                     message.id = id;
+                    let outgoing_attachments =
+                        pending_to_realtime_attachments(&pending_attachments_send);
                     if !pending_attachments_send.is_empty() {
                         if let Err(err) = insert_attachments(
                             &mut self.db,
@@ -1637,7 +1719,10 @@ impl App {
                     }
                     self.track_member(&message);
                     self.messages.push(message);
-                    self.realtime.send_message(self.messages.last().expect("message"));
+                    self.realtime.send_message(
+                        self.messages.last().expect("message"),
+                        outgoing_attachments,
+                    );
                 }
                 Err(err) => {
                     eprintln!("db insert error: {err}");
@@ -1646,19 +1731,37 @@ impl App {
         }
 
         if !incoming.is_empty() {
-            for message in incoming {
-                let mut incoming_message = message;
-                match insert_message(&self.db, &incoming_message) {
+            for incoming_message in incoming {
+                let mut inbound = incoming_message.message;
+                let inbound_attachments = incoming_message.attachments;
+                match insert_message(&self.db, &inbound) {
                     Ok(id) => {
-                        incoming_message.id = id;
+                        inbound.id = id;
+                        if !inbound_attachments.is_empty() {
+                            let pending = realtime_to_pending_attachments(&inbound_attachments);
+                            if let Err(err) = insert_attachments(&mut self.db, inbound.id, &pending)
+                            {
+                                eprintln!("db attachments insert error: {err}");
+                            }
+                            self.message_attachments
+                                .entry(inbound.id)
+                                .or_default()
+                                .extend(pending.into_iter().map(|pending| Attachment {
+                                    message_id: inbound.id,
+                                    file_path: pending.file_path,
+                                    file_name: pending.file_name,
+                                    file_size: pending.file_size,
+                                    kind: pending.kind,
+                                }));
+                        }
                     }
                     Err(err) => {
                         eprintln!("db insert error: {err}");
                     }
                 }
-                self.track_member(&incoming_message);
-                if incoming_message.channel_id == self.selected_channel_id {
-                    self.messages.push(incoming_message);
+                self.track_member(&inbound);
+                if inbound.channel_id == self.selected_channel_id {
+                    self.messages.push(inbound);
                 }
             }
         }
@@ -1822,6 +1925,41 @@ fn insert_attachments(
     Ok(())
 }
 
+fn pending_to_realtime_attachments(
+    attachments: &[PendingAttachment],
+) -> Vec<RealtimeAttachment> {
+    attachments
+        .iter()
+        .map(|attachment| RealtimeAttachment {
+            file_path: attachment.file_path.clone(),
+            file_name: attachment.file_name.clone(),
+            file_size: attachment.file_size,
+            kind: attachment.kind.clone(),
+        })
+        .collect()
+}
+
+fn realtime_to_pending_attachments(
+    attachments: &[RealtimeAttachment],
+) -> Vec<PendingAttachment> {
+    attachments
+        .iter()
+        .map(|attachment| {
+            let file_name = if attachment.file_name.is_empty() {
+                file_name_from_path(&attachment.file_path)
+            } else {
+                attachment.file_name.clone()
+            };
+            PendingAttachment {
+                file_path: attachment.file_path.clone(),
+                file_name,
+                file_size: attachment.file_size,
+                kind: attachment.kind.clone(),
+            }
+        })
+        .collect()
+}
+
 fn load_attachments_for_message_ids(
     conn: &Connection,
     message_ids: &[i64],
@@ -1857,6 +1995,35 @@ fn load_attachments_for_message_ids(
             .push(attachment);
     }
     Ok(map)
+}
+
+fn load_attachment_thumbnail(
+    ctx: &egui::Context,
+    path: &str,
+) -> Result<egui::TextureHandle, String> {
+    let reader = ImageReader::open(path)
+        .map_err(|err| format!("file open: {err}"))?
+        .with_guessed_format()
+        .map_err(|err| format!("format error: {err}"))?;
+    let mut image = reader.decode().map_err(|err| format!("decode error: {err}"))?;
+    let max_dimension = 320u32;
+    let (width, height) = image.dimensions();
+    let max_axis = width.max(height);
+    if max_axis > max_dimension {
+        let scale = max_dimension as f32 / max_axis as f32;
+        let new_width = (width as f32 * scale).round().max(1.0) as u32;
+        let new_height = (height as f32 * scale).round().max(1.0) as u32;
+        image = image.resize(new_width, new_height, FilterType::Triangle);
+    }
+    let rgba = image.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let pixels = rgba.into_raw();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    Ok(ctx.load_texture(
+        format!("attachment:{path}"),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 fn ingest_attachment(path: &str) -> Result<PendingAttachment, String> {
