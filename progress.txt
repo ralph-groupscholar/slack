@@ -158,3 +158,10 @@
 **Performance:** Startup p50 276.08ms, p95 928.01ms; Memory max RSS 101.2MB
 **Files changed:** src/main.rs, perf_tests/startup_bench.py, perf_tests/memory_bench.sh, BENCHMARKS.md, PRD.md, progress.txt
 **Next:** Improve startup time and reduce memory usage to hit <200ms cold / <100MB targets.
+
+## Iteration 27 - February 6, 2026
+
+**Built:** Deferred attachment + channel member loading to a background thread so the first frame can render sooner.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Measure startup baseline again and target the next biggest startup contributors.
