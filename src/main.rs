@@ -602,6 +602,8 @@ fn seed_messages() -> Vec<Message> {
     ]
 }
 
+const MESSAGE_FETCH_LIMIT: i64 = 200;
+
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -712,9 +714,13 @@ fn load_channels(conn: &Connection) -> Result<Vec<Channel>, rusqlite::Error> {
 
 fn load_messages(conn: &Connection, channel_id: i64) -> Result<Vec<Message>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, author, body, sent_at, channel_id FROM messages WHERE channel_id = ?1 ORDER BY id ASC",
+        "SELECT id, author, body, sent_at, channel_id
+        FROM messages
+        WHERE channel_id = ?1
+        ORDER BY id DESC
+        LIMIT ?2",
     )?;
-    let rows = stmt.query_map([channel_id], |row| {
+    let rows = stmt.query_map(params![channel_id, MESSAGE_FETCH_LIMIT], |row| {
         Ok(Message {
             id: row.get(0)?,
             author: row.get(1)?,
@@ -728,6 +734,7 @@ fn load_messages(conn: &Connection, channel_id: i64) -> Result<Vec<Message>, rus
     for message in rows {
         messages.push(message?);
     }
+    messages.reverse();
     Ok(messages)
 }
 
@@ -856,6 +863,8 @@ struct ThumbnailResult {
 }
 
 struct DeferredLoadResult {
+    channel_id: i64,
+    messages: Vec<Message>,
     attachments: HashMap<i64, Vec<Attachment>>,
     channel_members: HashMap<i64, HashSet<String>>,
 }
@@ -890,6 +899,7 @@ struct App {
     search_results: Vec<Message>,
     search_channel_only: bool,
     search_last_channel_only: bool,
+    messages_loaded: bool,
     message_attachments: HashMap<i64, Vec<Attachment>>,
     attachment_path_drafts: HashMap<i64, String>,
     pending_attachments: HashMap<i64, Vec<PendingAttachment>>,
@@ -1000,27 +1010,39 @@ impl App {
         };
         let selected_channel_id = channels.first().map(|channel| channel.id).unwrap_or(1);
         let composer_meta = build_composer_meta(&channels);
-        let messages = match load_messages(&db, selected_channel_id) {
-            Ok(messages) => messages,
-            Err(err) => {
-                eprintln!("db load error: {err}");
-                seed_messages()
-                    .into_iter()
-                    .filter(|message| message.channel_id == selected_channel_id)
-                    .collect()
-            }
-        };
-        let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
-        let (deferred_load_sender, deferred_load_receiver) = mpsc::channel();
+        let messages = Vec::new();
+        let deferred_channel_id = selected_channel_id;
         let channels_for_load = channels.clone();
+        let (deferred_load_sender, deferred_load_receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let db = match Connection::open("ralph.db") {
                 Ok(conn) => conn,
                 Err(err) => {
                     eprintln!("db open error (deferred): {err}");
+                    let messages = seed_messages()
+                        .into_iter()
+                        .filter(|message| message.channel_id == deferred_channel_id)
+                        .collect();
+                    let _ = deferred_load_sender.send(DeferredLoadResult {
+                        channel_id: deferred_channel_id,
+                        messages,
+                        attachments: HashMap::new(),
+                        channel_members: HashMap::new(),
+                    });
                     return;
                 }
             };
+            let messages = match load_messages(&db, deferred_channel_id) {
+                Ok(messages) => messages,
+                Err(err) => {
+                    eprintln!("db load error (deferred): {err}");
+                    seed_messages()
+                        .into_iter()
+                        .filter(|message| message.channel_id == deferred_channel_id)
+                        .collect()
+                }
+            };
+            let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
             let attachments = match load_attachments_for_message_ids(&db, &message_ids) {
                 Ok(attachments) => attachments,
                 Err(err) => {
@@ -1036,6 +1058,8 @@ impl App {
                 }
             };
             let _ = deferred_load_sender.send(DeferredLoadResult {
+                channel_id: deferred_channel_id,
+                messages,
                 attachments,
                 channel_members,
             });
@@ -1081,6 +1105,7 @@ impl App {
             search_results: Vec::new(),
             search_channel_only: true,
             search_last_channel_only: true,
+            messages_loaded: false,
             message_attachments: HashMap::new(),
             attachment_path_drafts: HashMap::new(),
             pending_attachments: HashMap::new(),
@@ -1311,18 +1336,24 @@ impl App {
                         && self.search_last_channel_only == self.search_channel_only;
                 let show_channel =
                     show_search_results && !self.search_channel_only;
-                let messages = if show_search_results {
-                    &self.search_results
-                } else {
-                    &self.messages
-                };
-                if show_search_results && messages.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No matches found.")
-                            .small()
-                            .color(egui::Color32::from_rgb(160, 170, 190)),
-                    );
-                }
+        let messages = if show_search_results {
+            &self.search_results
+        } else {
+            &self.messages
+        };
+        if show_search_results && messages.is_empty() {
+            ui.label(
+                egui::RichText::new("No matches found.")
+                    .small()
+                    .color(egui::Color32::from_rgb(160, 170, 190)),
+            );
+        } else if !show_search_results && !self.messages_loaded && messages.is_empty() {
+            ui.label(
+                egui::RichText::new("Loading messages...")
+                    .small()
+                    .color(egui::Color32::from_rgb(160, 170, 190)),
+            );
+        }
                 let mut thumbnail_requests: Vec<String> = Vec::new();
                 for message in messages {
                     ui.horizontal(|row| {
@@ -1667,6 +1698,7 @@ impl App {
                         Vec::new()
                     }
                 };
+                self.messages_loaded = true;
                 self.message_attachments = match load_attachments_for_message_ids(
                     &self.db,
                     &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
@@ -1881,10 +1913,10 @@ impl App {
             None => None,
         };
         if let Some(result) = result {
-            for (message_id, attachments) in result.attachments {
-                self.message_attachments
-                    .entry(message_id)
-                    .or_insert(attachments);
+            if result.channel_id == self.selected_channel_id {
+                self.messages = result.messages;
+                self.message_attachments = result.attachments;
+                self.messages_loaded = true;
             }
             for (channel_id, members) in result.channel_members {
                 self.channel_members
