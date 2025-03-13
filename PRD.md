@@ -31,6 +31,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added perf test scripts for startup/memory baselines and recorded benchmark results (startup p50 276.08ms, p95 928.01ms; max RSS 101.2MB) in `perf_tests/` and `BENCHMARKS.md`.
 - Deferred attachment + channel member loading onto a background thread to reduce startup latency (`src/main.rs`).
 - Deferred initial message loading to a background thread and show a loading state until messages are ready (`src/main.rs`).
+- Re-ran startup and memory benchmarks after async message loading (startup p50 226.22ms, p95 268.57ms; max RSS 101.8MB) and refreshed `BENCHMARKS.md`.
+- Reduced the initial message fetch limit to lower baseline memory usage (`src/main.rs`).
 
 ## Core Requirements
 

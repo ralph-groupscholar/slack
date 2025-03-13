@@ -172,3 +172,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run startup/memory benchmarks to confirm the impact and pick the next biggest startup contributors.
+
+## Iteration 29 - February 6, 2026
+
+**Built:** Re-ran startup + memory benchmarks after async message loading and refreshed benchmark results.
+**Performance:** Startup p50 226.22ms, p95 268.57ms; Memory max RSS 101.8MB
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Continue reducing cold startup and memory to hit <200ms / <100MB targets.
+
+## Iteration 30 - February 6, 2026
+
+**Built:** Lowered the initial message fetch limit to reduce baseline memory usage.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run memory benchmarks to confirm <100MB and continue trimming cold startup.
