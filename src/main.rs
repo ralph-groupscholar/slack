@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     fs,
     path::Path,
@@ -602,7 +602,9 @@ fn seed_messages() -> Vec<Message> {
     ]
 }
 
-const MESSAGE_FETCH_LIMIT: i64 = 120;
+const MESSAGE_FETCH_LIMIT: i64 = 50;
+const THUMBNAIL_CACHE_LIMIT: usize = 48;
+const THUMBNAIL_ERROR_LIMIT: usize = 48;
 
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
@@ -907,6 +909,8 @@ struct App {
     attachment_action_error: Option<String>,
     attachment_thumbnails: HashMap<String, egui::TextureHandle>,
     attachment_thumbnail_errors: HashMap<String, String>,
+    thumbnail_cache_order: VecDeque<String>,
+    thumbnail_error_order: VecDeque<String>,
     thumbnail_sender: mpsc::Sender<ThumbnailResult>,
     thumbnail_receiver: mpsc::Receiver<ThumbnailResult>,
     thumbnail_in_flight: HashSet<String>,
@@ -1113,6 +1117,8 @@ impl App {
             attachment_action_error: None,
             attachment_thumbnails: HashMap::new(),
             attachment_thumbnail_errors: HashMap::new(),
+            thumbnail_cache_order: VecDeque::new(),
+            thumbnail_error_order: VecDeque::new(),
             thumbnail_sender,
             thumbnail_receiver,
             thumbnail_in_flight: HashSet::new(),
@@ -1355,6 +1361,8 @@ impl App {
             );
         }
                 let mut thumbnail_requests: Vec<String> = Vec::new();
+                let mut touched_thumbnails: Vec<String> = Vec::new();
+                let mut touched_errors: Vec<String> = Vec::new();
                 for message in messages {
                     ui.horizontal(|row| {
                         row.label(
@@ -1378,22 +1386,17 @@ impl App {
                     if let Some(attachments) = self.message_attachments.get(&message.id) {
                         for attachment in attachments {
                             if attachment.kind == "image" {
-                                let thumbnail = if let Some(texture) =
-                                    self.attachment_thumbnails.get(&attachment.file_path)
-                                {
-                                    Some(texture)
-                                } else if self
-                                    .attachment_thumbnail_errors
-                                    .contains_key(&attachment.file_path)
-                                {
+                                let path = attachment.file_path.as_str();
+                                let thumbnail = if self.attachment_thumbnails.contains_key(path) {
+                                    touched_thumbnails.push(path.to_string());
+                                    self.attachment_thumbnails.get(path)
+                                } else if self.attachment_thumbnail_errors.contains_key(path) {
+                                    touched_errors.push(path.to_string());
                                     None
-                                } else if self
-                                    .thumbnail_in_flight
-                                    .contains(&attachment.file_path)
-                                {
+                                } else if self.thumbnail_in_flight.contains(path) {
                                     None
                                 } else {
-                                    thumbnail_requests.push(attachment.file_path.clone());
+                                    thumbnail_requests.push(path.to_string());
                                     None
                                 };
                                 if let Some(texture) = thumbnail {
@@ -1403,12 +1406,10 @@ impl App {
                                         egui::Image::from_texture(sized)
                                             .max_size(egui::Vec2::new(220.0, 160.0)),
                                     );
-                                } else if self
-                                    .thumbnail_in_flight
-                                    .contains(&attachment.file_path)
+                                } else if self.thumbnail_in_flight.contains(path)
                                     || thumbnail_requests
                                         .iter()
-                                        .any(|path| path == &attachment.file_path)
+                                        .any(|queued| queued == path)
                                 {
                                     ui.label(
                                         egui::RichText::new("Loading image preview...")
@@ -1416,7 +1417,7 @@ impl App {
                                             .color(egui::Color32::from_rgb(130, 140, 160)),
                                     );
                                 } else if let Some(err) =
-                                    self.attachment_thumbnail_errors.get(&attachment.file_path)
+                                    self.attachment_thumbnail_errors.get(path)
                                 {
                                     ui.label(
                                         egui::RichText::new(format!(
@@ -1469,6 +1470,12 @@ impl App {
                     for path in thumbnail_requests {
                         self.queue_thumbnail_load(&path);
                     }
+                }
+                for path in touched_thumbnails {
+                    self.touch_thumbnail_cache(&path);
+                }
+                for path in touched_errors {
+                    self.touch_thumbnail_error(&path);
                 }
                 if let Some(error) = &self.attachment_action_error {
                     ui.label(
@@ -1892,7 +1899,9 @@ impl App {
             self.thumbnail_in_flight.remove(&result.path);
             if let Some(error) = result.error {
                 self.attachment_thumbnail_errors
-                    .insert(result.path, error);
+                    .insert(result.path.clone(), error);
+                self.touch_thumbnail_error(&result.path);
+                self.enforce_thumbnail_cache_limits();
                 continue;
             }
             if let Some(image) = result.image {
@@ -1902,7 +1911,37 @@ impl App {
                     egui::TextureOptions::LINEAR,
                 );
                 self.attachment_thumbnails
-                    .insert(result.path, texture);
+                    .insert(result.path.clone(), texture);
+                self.touch_thumbnail_cache(&result.path);
+                self.enforce_thumbnail_cache_limits();
+            }
+        }
+    }
+
+    fn touch_thumbnail_cache(&mut self, path: &str) {
+        Self::touch_cache_order(&mut self.thumbnail_cache_order, path);
+    }
+
+    fn touch_thumbnail_error(&mut self, path: &str) {
+        Self::touch_cache_order(&mut self.thumbnail_error_order, path);
+    }
+
+    fn touch_cache_order(order: &mut VecDeque<String>, path: &str) {
+        if let Some(pos) = order.iter().position(|entry| entry == path) {
+            order.remove(pos);
+        }
+        order.push_back(path.to_string());
+    }
+
+    fn enforce_thumbnail_cache_limits(&mut self) {
+        while self.thumbnail_cache_order.len() > THUMBNAIL_CACHE_LIMIT {
+            if let Some(evicted) = self.thumbnail_cache_order.pop_front() {
+                self.attachment_thumbnails.remove(&evicted);
+            }
+        }
+        while self.thumbnail_error_order.len() > THUMBNAIL_ERROR_LIMIT {
+            if let Some(evicted) = self.thumbnail_error_order.pop_front() {
+                self.attachment_thumbnail_errors.remove(&evicted);
             }
         }
     }
