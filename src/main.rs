@@ -602,9 +602,9 @@ fn seed_messages() -> Vec<Message> {
     ]
 }
 
-const MESSAGE_FETCH_LIMIT: i64 = 50;
-const THUMBNAIL_CACHE_LIMIT: usize = 48;
-const THUMBNAIL_ERROR_LIMIT: usize = 48;
+const MESSAGE_FETCH_LIMIT: i64 = 30;
+const THUMBNAIL_CACHE_LIMIT: usize = 24;
+const THUMBNAIL_ERROR_LIMIT: usize = 24;
 
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
