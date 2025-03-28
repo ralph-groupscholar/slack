@@ -25,5 +25,5 @@ perf_tests/memory_bench.sh
 ```
 
 Results:
-- max_rss_mb: 102.0 MB
-- max_rss_bytes: 106905600
+- max_rss_mb: 97.7 MB
+- max_rss_bytes: 102449152
