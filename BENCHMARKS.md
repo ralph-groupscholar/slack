@@ -13,8 +13,8 @@ perf_tests/startup_bench.py 10
 ```
 
 Results:
-- p50: 226.22 ms
-- p95: 268.57 ms
+- p50: 248.62 ms
+- p95: 379.62 ms
 
 ### Memory (max RSS)
 
