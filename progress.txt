@@ -270,3 +270,10 @@
 **Performance:** Startup p50 248.62ms, p95 379.62ms; Memory: not measured
 **Files changed:** BENCHMARKS.md, PRD.md, progress.txt
 **Next:** Identify the next cold-start bottleneck to reach <200ms (profile startup path, trim heavy init).
+
+## Iteration 43 - February 6, 2026
+
+**Built:** Deferred channel/message seeding and channel loading to the background hydrate path, updating channel metadata after deferred loads to reduce cold-start work.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to see if cold start drops closer to <200ms.
