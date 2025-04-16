@@ -48,6 +48,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Deferred channel/message DB seeding and channel loading to the background hydrate path, updating channel metadata after deferred loads to reduce cold-start work (`src/main.rs`).
 - Re-ran startup benchmarks after the deferred channel/message loading changes (startup p50 300.52ms, p95 440.98ms) and refreshed `BENCHMARKS.md`.
 - Deferred realtime worker initialization until the user connects, reducing background thread work at cold start (`src/main.rs`).
+- Limited wgpu backend initialization to Metal to reduce adapter enumeration overhead at cold start (`src/main.rs`).
 
 ## Core Requirements
 
