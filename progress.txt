@@ -277,3 +277,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run startup benchmarks to see if cold start drops closer to <200ms.
+
+## Iteration 44 - February 6, 2026
+
+**Built:** Re-ran startup benchmarks after deferred channel/message loading changes and recorded updated results.
+**Performance:** Startup p50 300.52ms, p95 440.98ms; Memory: not measured
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Identify and trim the next cold-start bottleneck to reach <200ms.
+
+## Iteration 45 - February 6, 2026
+
+**Built:** Deferred realtime worker initialization until connect to reduce cold-start background work.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to see if cold start improves and trim remaining startup bottlenecks.
