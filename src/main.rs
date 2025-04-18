@@ -890,6 +890,7 @@ struct DeferredLoadResult {
     messages: Vec<Message>,
     attachments: HashMap<i64, Vec<Attachment>>,
     channel_members: HashMap<i64, HashSet<String>>,
+    db_ready: bool,
 }
 
 struct App {
@@ -1013,9 +1014,6 @@ impl App {
                 Connection::open_in_memory().expect("memory db")
             }
         };
-        if let Err(err) = ensure_schema(&db) {
-            eprintln!("db schema error: {err}");
-        }
         let channels: Vec<Channel> = seed_channels()
             .into_iter()
             .map(|(id, name, kind)| Channel {
@@ -1045,12 +1043,15 @@ impl App {
                         messages,
                         attachments: HashMap::new(),
                         channel_members: HashMap::new(),
+                        db_ready: false,
                     });
                     return;
                 }
             };
+            let mut db_ready = true;
             if let Err(err) = ensure_schema(&db) {
                 eprintln!("db schema error (deferred): {err}");
+                db_ready = false;
             }
             if let Err(err) = seed_channels_if_empty(&mut db) {
                 eprintln!("db seed channels error (deferred): {err}");
@@ -1103,6 +1104,7 @@ impl App {
                 messages,
                 attachments,
                 channel_members,
+                db_ready,
             });
         });
         let mut presence_state = HashMap::new();
@@ -1330,46 +1332,55 @@ impl App {
                     );
                 }
                 ui.separator();
-                ui.horizontal(|row| {
-                    row.label("Search");
-                    let search_box = row.add(
-                        egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text("Search messages")
-                            .desired_width(240.0),
-                    );
-                    let search_enter = search_box.has_focus()
-                        && row.input(|input| input.key_pressed(egui::Key::Enter));
-                    if row.button("Go").clicked() || search_enter {
-                        let trimmed = self.search_query.trim();
-                        if !trimmed.is_empty() {
-                            search_request = Some(SearchRequest {
-                                query: trimmed.to_string(),
-                                channel_only: self.search_channel_only,
-                            });
+                ui.add_enabled_ui(self.messages_loaded, |ui| {
+                    ui.horizontal(|row| {
+                        row.label("Search");
+                        let search_box = row.add(
+                            egui::TextEdit::singleline(&mut self.search_query)
+                                .hint_text("Search messages")
+                                .desired_width(240.0),
+                        );
+                        let search_enter = search_box.has_focus()
+                            && row.input(|input| input.key_pressed(egui::Key::Enter));
+                        if row.button("Go").clicked() || search_enter {
+                            let trimmed = self.search_query.trim();
+                            if !trimmed.is_empty() {
+                                search_request = Some(SearchRequest {
+                                    query: trimmed.to_string(),
+                                    channel_only: self.search_channel_only,
+                                });
+                            }
                         }
-                    }
-                    row.checkbox(&mut self.search_channel_only, "This channel");
-                    if row.button("Clear").clicked() {
-                        search_clear = true;
+                        row.checkbox(&mut self.search_channel_only, "This channel");
+                        if row.button("Clear").clicked() {
+                            search_clear = true;
+                        }
+                    });
+                    if self.search_query.trim().is_empty() {
+                        ui.label(
+                            egui::RichText::new("Search by author or text.")
+                                .small()
+                                .color(egui::Color32::from_rgb(120, 130, 150)),
+                        );
+                    } else if self.search_last_query == self.search_query.trim()
+                        && self.search_last_channel_only == self.search_channel_only
+                    {
+                        ui.label(
+                            egui::RichText::new(format!("Results: {}", self.search_results.len()))
+                                .small()
+                                .color(egui::Color32::from_rgb(120, 130, 150)),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Press Enter to search.")
+                                .small()
+                                .color(egui::Color32::from_rgb(120, 130, 150)),
+                        );
                     }
                 });
-                if self.search_query.trim().is_empty() {
+                if !self.messages_loaded {
                     ui.label(
-                        egui::RichText::new("Search by author or text.")
-                            .small()
-                            .color(egui::Color32::from_rgb(120, 130, 150)),
-                    );
-                } else if self.search_last_query == self.search_query.trim()
-                    && self.search_last_channel_only == self.search_channel_only
-                {
-                    ui.label(
-                        egui::RichText::new(format!("Results: {}", self.search_results.len()))
-                            .small()
-                            .color(egui::Color32::from_rgb(120, 130, 150)),
-                    );
-                } else {
-                    ui.label(
-                        egui::RichText::new("Press Enter to search.")
+                        egui::RichText::new("Search available once messages finish loading.")
                             .small()
                             .color(egui::Color32::from_rgb(120, 130, 150)),
                     );
@@ -1524,133 +1535,144 @@ impl App {
                     );
                 }
                 ui.separator();
-                let (composer_placeholder, typing_stub) = self
-                    .composer_meta
-                    .get(&self.selected_channel_id)
-                    .map(|meta| (meta.placeholder.as_str(), meta.typing_stub.as_str()))
-                    .unwrap_or(("Send a message", "Typing..."));
-                let draft = self
-                    .composer_drafts
-                    .entry(self.selected_channel_id)
-                    .or_default();
-                let typing_active = match self.typing_state.get(&self.selected_channel_id).copied() {
-                    Some(last_edit) if last_edit.elapsed() < Duration::from_secs(3) => true,
-                    Some(_) => {
-                        self.typing_state.remove(&self.selected_channel_id);
-                        false
-                    }
-                    None => false,
-                };
-                let typing_label = if typing_active && !draft.trim().is_empty() {
-                    "You are typing..."
-                } else {
-                    typing_stub
-                };
-                ui.label(
-                    egui::RichText::new(typing_label)
-                        .small()
-                        .color(egui::Color32::from_rgb(140, 150, 170)),
-                );
-                let attachment_path = self
-                    .attachment_path_drafts
-                    .entry(self.selected_channel_id)
-                    .or_default();
-                let pending_list = self
-                    .pending_attachments
-                    .entry(self.selected_channel_id)
-                    .or_default();
-                ui.horizontal(|row| {
-                    row.label("Attach");
-                    row.add(
-                        egui::TextEdit::singleline(attachment_path)
-                            .hint_text("Path to file")
-                            .desired_width(320.0),
+                ui.add_enabled_ui(self.messages_loaded, |ui| {
+                    let (composer_placeholder, typing_stub) = self
+                        .composer_meta
+                        .get(&self.selected_channel_id)
+                        .map(|meta| (meta.placeholder.as_str(), meta.typing_stub.as_str()))
+                        .unwrap_or(("Send a message", "Typing..."));
+                    let draft = self
+                        .composer_drafts
+                        .entry(self.selected_channel_id)
+                        .or_default();
+                    let typing_active =
+                        match self.typing_state.get(&self.selected_channel_id).copied() {
+                            Some(last_edit) if last_edit.elapsed() < Duration::from_secs(3) => true,
+                            Some(_) => {
+                                self.typing_state.remove(&self.selected_channel_id);
+                                false
+                            }
+                            None => false,
+                        };
+                    let typing_label = if typing_active && !draft.trim().is_empty() {
+                        "You are typing..."
+                    } else {
+                        typing_stub
+                    };
+                    ui.label(
+                        egui::RichText::new(typing_label)
+                            .small()
+                            .color(egui::Color32::from_rgb(140, 150, 170)),
                     );
-                    if row.button("Add").clicked() {
-                        let trimmed = attachment_path.trim();
-                        if trimmed.is_empty() {
-                            self.attachment_error = Some("Attachment path is empty.".to_string());
-                        } else {
-                            match ingest_attachment(trimmed) {
-                                Ok(attachment) => {
-                                    pending_list.push(attachment);
-                                    attachment_path.clear();
-                                    self.attachment_error = None;
-                                }
-                                Err(err) => {
-                                    self.attachment_error = Some(err);
+                    let attachment_path = self
+                        .attachment_path_drafts
+                        .entry(self.selected_channel_id)
+                        .or_default();
+                    let pending_list = self
+                        .pending_attachments
+                        .entry(self.selected_channel_id)
+                        .or_default();
+                    ui.horizontal(|row| {
+                        row.label("Attach");
+                        row.add(
+                            egui::TextEdit::singleline(attachment_path)
+                                .hint_text("Path to file")
+                                .desired_width(320.0),
+                        );
+                        if row.button("Add").clicked() {
+                            let trimmed = attachment_path.trim();
+                            if trimmed.is_empty() {
+                                self.attachment_error =
+                                    Some("Attachment path is empty.".to_string());
+                            } else {
+                                match ingest_attachment(trimmed) {
+                                    Ok(attachment) => {
+                                        pending_list.push(attachment);
+                                        attachment_path.clear();
+                                        self.attachment_error = None;
+                                    }
+                                    Err(err) => {
+                                        self.attachment_error = Some(err);
+                                    }
                                 }
                             }
                         }
-                    }
-                });
-                let mut remove_attachment: Option<usize> = None;
-                for (idx, attachment) in pending_list.iter().enumerate() {
-                    ui.horizontal(|row| {
-                        row.label(
-                            egui::RichText::new(format!(
-                                "{} ({}, {})",
-                                attachment.file_name,
-                                format_bytes(attachment.file_size),
-                                attachment.kind
-                            ))
-                            .small()
-                            .color(egui::Color32::from_rgb(160, 170, 190)),
-                        );
-                        if row.button("Remove").clicked() {
-                            remove_attachment = Some(idx);
-                        }
                     });
-                }
-                if let Some(idx) = remove_attachment {
-                    if idx < pending_list.len() {
-                        pending_list.remove(idx);
+                    let mut remove_attachment: Option<usize> = None;
+                    for (idx, attachment) in pending_list.iter().enumerate() {
+                        ui.horizontal(|row| {
+                            row.label(
+                                egui::RichText::new(format!(
+                                    "{} ({}, {})",
+                                    attachment.file_name,
+                                    format_bytes(attachment.file_size),
+                                    attachment.kind
+                                ))
+                                .small()
+                                .color(egui::Color32::from_rgb(160, 170, 190)),
+                            );
+                            if row.button("Remove").clicked() {
+                                remove_attachment = Some(idx);
+                            }
+                        });
                     }
-                }
-                if let Some(error) = &self.attachment_error {
-                    ui.label(
-                        egui::RichText::new(error)
-                            .small()
-                            .color(egui::Color32::from_rgb(220, 120, 120)),
-                    );
-                }
-                ui.horizontal(|row| {
-                    let composer = row.add(
-                        egui::TextEdit::singleline(draft)
-                            .hint_text(composer_placeholder)
-                            .desired_width(f32::INFINITY),
-                    );
-                    if self.composer_focus_requested {
-                        composer.request_focus();
-                        self.composer_focus_requested = false;
-                    }
-                    let send_clicked = row.button("Send").clicked();
-                    let send_enter = composer.has_focus()
-                        && row.input(|input| input.key_pressed(egui::Key::Enter));
-                    let send_now = send_clicked || send_enter;
-                    if send_clicked {
-                        self.composer_focus_requested = true;
-                    }
-                    if composer.changed() {
-                        if draft.trim().is_empty() {
-                            self.typing_state.remove(&self.selected_channel_id);
-                        } else {
-                            self.typing_state
-                                .insert(self.selected_channel_id, Instant::now());
+                    if let Some(idx) = remove_attachment {
+                        if idx < pending_list.len() {
+                            pending_list.remove(idx);
                         }
                     }
-                    if send_now {
-                        let body = draft.trim().to_string();
-                        if !body.is_empty() || !pending_list.is_empty() {
-                            pending_send = Some(body);
-                            pending_attachments_send = pending_list.clone();
-                            pending_list.clear();
-                            draft.clear();
-                            self.typing_state.remove(&self.selected_channel_id);
+                    if let Some(error) = &self.attachment_error {
+                        ui.label(
+                            egui::RichText::new(error)
+                                .small()
+                                .color(egui::Color32::from_rgb(220, 120, 120)),
+                        );
+                    }
+                    ui.horizontal(|row| {
+                        let composer = row.add(
+                            egui::TextEdit::singleline(draft)
+                                .hint_text(composer_placeholder)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if self.composer_focus_requested {
+                            composer.request_focus();
+                            self.composer_focus_requested = false;
+                        }
+                        let send_clicked = row.button("Send").clicked();
+                        let send_enter = composer.has_focus()
+                            && row.input(|input| input.key_pressed(egui::Key::Enter));
+                        let send_now = send_clicked || send_enter;
+                        if send_clicked {
                             self.composer_focus_requested = true;
                         }
-                    }
+                        if composer.changed() {
+                            if draft.trim().is_empty() {
+                                self.typing_state.remove(&self.selected_channel_id);
+                            } else {
+                                self.typing_state
+                                    .insert(self.selected_channel_id, Instant::now());
+                            }
+                        }
+                        if send_now {
+                            let body = draft.trim().to_string();
+                            if !body.is_empty() || !pending_list.is_empty() {
+                                pending_send = Some(body);
+                                pending_attachments_send = pending_list.clone();
+                                pending_list.clear();
+                                draft.clear();
+                                self.typing_state.remove(&self.selected_channel_id);
+                                self.composer_focus_requested = true;
+                            }
+                        }
+                    });
                 });
+                if !self.messages_loaded {
+                    ui.label(
+                        egui::RichText::new("Composer available once messages finish loading.")
+                            .small()
+                            .color(egui::Color32::from_rgb(140, 150, 170)),
+                    );
+                }
             });
         });
         if realtime_connect {
@@ -1741,7 +1763,7 @@ impl App {
         }
 
         if let Some(channel_id) = channel_switch {
-            if channel_id != self.selected_channel_id {
+            if self.messages_loaded && channel_id != self.selected_channel_id {
                 self.selected_channel_id = channel_id;
                 self.messages = match load_messages(&self.db, channel_id) {
                     Ok(messages) => messages,
@@ -1800,138 +1822,147 @@ impl App {
             self.search_last_query.clear();
             self.search_last_channel_only = self.search_channel_only;
             self.search_results.clear();
-            self.message_attachments = match load_attachments_for_message_ids(
-                &self.db,
-                &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
-            ) {
-                Ok(attachments) => attachments,
-                Err(err) => {
-                    eprintln!("db attachments load error: {err}");
-                    HashMap::new()
-                }
-            };
+            if self.messages_loaded {
+                self.message_attachments = match load_attachments_for_message_ids(
+                    &self.db,
+                    &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+                ) {
+                    Ok(attachments) => attachments,
+                    Err(err) => {
+                        eprintln!("db attachments load error: {err}");
+                        HashMap::new()
+                    }
+                };
+            }
         }
 
         if let Some(request) = search_request {
-            let query = request.query;
-            let channel_filter = if request.channel_only {
-                Some(self.selected_channel_id)
-            } else {
-                None
-            };
-            match search_messages(&self.db, &query, channel_filter) {
-                Ok(results) => {
-                    self.search_last_query = query;
-                    self.search_last_channel_only = request.channel_only;
-                    self.search_results = results;
-                    self.message_attachments = match load_attachments_for_message_ids(
-                        &self.db,
-                        &self
-                            .search_results
-                            .iter()
-                            .map(|message| message.id)
-                            .collect::<Vec<_>>(),
-                    ) {
-                        Ok(attachments) => attachments,
-                        Err(err) => {
-                            eprintln!("db attachments load error: {err}");
-                            HashMap::new()
-                        }
-                    };
-                }
-                Err(err) => {
-                    eprintln!("db search error: {err}");
-                    self.search_last_query.clear();
-                    self.search_last_channel_only = request.channel_only;
-                    self.search_results.clear();
+            if self.messages_loaded {
+                let query = request.query;
+                let channel_filter = if request.channel_only {
+                    Some(self.selected_channel_id)
+                } else {
+                    None
+                };
+                match search_messages(&self.db, &query, channel_filter) {
+                    Ok(results) => {
+                        self.search_last_query = query;
+                        self.search_last_channel_only = request.channel_only;
+                        self.search_results = results;
+                        self.message_attachments = match load_attachments_for_message_ids(
+                            &self.db,
+                            &self
+                                .search_results
+                                .iter()
+                                .map(|message| message.id)
+                                .collect::<Vec<_>>(),
+                        ) {
+                            Ok(attachments) => attachments,
+                            Err(err) => {
+                                eprintln!("db attachments load error: {err}");
+                                HashMap::new()
+                            }
+                        };
+                    }
+                    Err(err) => {
+                        eprintln!("db search error: {err}");
+                        self.search_last_query.clear();
+                        self.search_last_channel_only = request.channel_only;
+                        self.search_results.clear();
+                    }
                 }
             }
         }
 
         if let Some(body) = pending_send {
-            let content = if body.is_empty() && !pending_attachments_send.is_empty() {
-                "Attachment".to_string()
-            } else {
-                body
-            };
-            let mut message = Message {
-                id: 0,
-                author: "you".to_string(),
-                body: content,
-                sent_at: format_timestamp_utc(),
-                channel_id: self.selected_channel_id,
-            };
-            match insert_message(&self.db, &message) {
-                Ok(id) => {
-                    message.id = id;
-                    let outgoing_attachments =
-                        pending_to_realtime_attachments(&pending_attachments_send);
-                    if !pending_attachments_send.is_empty() {
-                        if let Err(err) = insert_attachments(
-                            &mut self.db,
-                            message.id,
-                            &pending_attachments_send,
-                        ) {
-                            eprintln!("db attachments insert error: {err}");
+            if self.messages_loaded {
+                let content = if body.is_empty() && !pending_attachments_send.is_empty() {
+                    "Attachment".to_string()
+                } else {
+                    body
+                };
+                let mut message = Message {
+                    id: 0,
+                    author: "you".to_string(),
+                    body: content,
+                    sent_at: format_timestamp_utc(),
+                    channel_id: self.selected_channel_id,
+                };
+                match insert_message(&self.db, &message) {
+                    Ok(id) => {
+                        message.id = id;
+                        let outgoing_attachments =
+                            pending_to_realtime_attachments(&pending_attachments_send);
+                        if !pending_attachments_send.is_empty() {
+                            if let Err(err) = insert_attachments(
+                                &mut self.db,
+                                message.id,
+                                &pending_attachments_send,
+                            ) {
+                                eprintln!("db attachments insert error: {err}");
+                            }
+                            self.message_attachments
+                                .entry(message.id)
+                                .or_default()
+                                .extend(pending_attachments_send.into_iter().map(|pending| {
+                                    Attachment {
+                                        message_id: message.id,
+                                        file_path: pending.file_path,
+                                        file_name: pending.file_name,
+                                        file_size: pending.file_size,
+                                        kind: pending.kind,
+                                    }
+                                }));
                         }
-                        self.message_attachments
-                            .entry(message.id)
-                            .or_default()
-                            .extend(pending_attachments_send.into_iter().map(|pending| {
-                                Attachment {
-                                    message_id: message.id,
-                                    file_path: pending.file_path,
-                                    file_name: pending.file_name,
-                                    file_size: pending.file_size,
-                                    kind: pending.kind,
-                                }
-                            }));
+                        self.track_member(&message);
+                        self.messages.push(message);
+                        self.realtime.send_message(
+                            self.messages.last().expect("message"),
+                            outgoing_attachments,
+                        );
                     }
-                    self.track_member(&message);
-                    self.messages.push(message);
-                    self.realtime.send_message(
-                        self.messages.last().expect("message"),
-                        outgoing_attachments,
-                    );
-                }
-                Err(err) => {
-                    eprintln!("db insert error: {err}");
+                    Err(err) => {
+                        eprintln!("db insert error: {err}");
+                    }
                 }
             }
         }
 
         if !incoming.is_empty() {
             for incoming_message in incoming {
-                let mut inbound = incoming_message.message;
-                let inbound_attachments = incoming_message.attachments;
-                match insert_message(&self.db, &inbound) {
-                    Ok(id) => {
-                        inbound.id = id;
-                        if !inbound_attachments.is_empty() {
-                            let pending = realtime_to_pending_attachments(&inbound_attachments);
-                            if let Err(err) = insert_attachments(&mut self.db, inbound.id, &pending)
-                            {
-                                eprintln!("db attachments insert error: {err}");
+                if self.messages_loaded {
+                    let mut inbound = incoming_message.message;
+                    let inbound_attachments = incoming_message.attachments;
+                    match insert_message(&self.db, &inbound) {
+                        Ok(id) => {
+                            inbound.id = id;
+                            if !inbound_attachments.is_empty() {
+                                let pending = realtime_to_pending_attachments(&inbound_attachments);
+                                if let Err(err) =
+                                    insert_attachments(&mut self.db, inbound.id, &pending)
+                                {
+                                    eprintln!("db attachments insert error: {err}");
+                                }
+                                self.message_attachments
+                                    .entry(inbound.id)
+                                    .or_default()
+                                    .extend(pending.into_iter().map(|pending| Attachment {
+                                        message_id: inbound.id,
+                                        file_path: pending.file_path,
+                                        file_name: pending.file_name,
+                                        file_size: pending.file_size,
+                                        kind: pending.kind,
+                                    }));
                             }
-                            self.message_attachments
-                                .entry(inbound.id)
-                                .or_default()
-                                .extend(pending.into_iter().map(|pending| Attachment {
-                                    message_id: inbound.id,
-                                    file_path: pending.file_path,
-                                    file_name: pending.file_name,
-                                    file_size: pending.file_size,
-                                    kind: pending.kind,
-                                }));
+                        }
+                        Err(err) => {
+                            eprintln!("db insert error: {err}");
                         }
                     }
-                    Err(err) => {
-                        eprintln!("db insert error: {err}");
+                    self.track_member(&inbound);
+                    if inbound.channel_id == self.selected_channel_id {
+                        self.messages.push(inbound);
                     }
-                }
-                self.track_member(&inbound);
-                if inbound.channel_id == self.selected_channel_id {
-                    self.messages.push(inbound);
                 }
             }
         }
@@ -2041,6 +2072,11 @@ impl App {
                     .entry(channel_id)
                     .or_default()
                     .extend(members);
+            }
+            if !result.db_ready {
+                if let Err(err) = ensure_schema(&self.db) {
+                    eprintln!("db schema error: {err}");
+                }
             }
             self.deferred_load_receiver = None;
         }
