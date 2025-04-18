@@ -312,3 +312,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run startup benchmarks to see if cold start improves and identify the next bottleneck.
+
+## Iteration 49 - February 6, 2026
+
+**Built:** Deferred opening the on-disk SQLite connection until the background hydrate completes to reduce cold-start IO.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to confirm cold-start impact and keep trimming the biggest startup bottlenecks.
+
+## Iteration 50 - February 6, 2026
+
+**Built:** Deferred the background hydrate thread until after the first frame renders to reduce cold-start work.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to confirm the cold-start impact and keep trimming startup bottlenecks.
