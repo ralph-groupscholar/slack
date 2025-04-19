@@ -53,6 +53,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Deferred SQLite schema initialization to the background hydrate path and gated search/composer actions until messages load to keep cold-start DB work off the main thread (`src/main.rs`).
 - Deferred opening the on-disk SQLite connection until the background hydrate completes to trim cold-start IO (`src/main.rs`).
 - Deferred the background hydrate thread until after the first frame renders to reduce cold-start work (`src/main.rs`).
+- Re-ran startup benchmarks after the deferred hydrate change (startup p50 218.37ms, p95 411.36ms) and refreshed `BENCHMARKS.md`.
 
 ## Core Requirements
 
