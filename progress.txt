@@ -333,3 +333,10 @@
 **Performance:** Startup p50 218.37ms, p95 411.36ms; Memory: not measured
 **Files changed:** BENCHMARKS.md, PRD.md, progress.txt
 **Next:** Identify and trim the next cold-start bottleneck to reach <200ms.
+
+## Iteration 52 - February 6, 2026
+
+**Built:** Added inline rich text rendering for message bodies (bold/italic/code).
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Identify and trim the next cold-start bottleneck to reach <200ms.

@@ -1356,7 +1356,12 @@ impl App {
                                     .color(egui::Color32::from_rgb(140, 150, 170)),
                             );
                         }
-                        row.label(&message.body);
+                        row.horizontal_wrapped(|body_ui| {
+                            let original_spacing = body_ui.spacing().item_spacing;
+                            body_ui.spacing_mut().item_spacing.x = 0.0;
+                            render_message_body(body_ui, &message.body);
+                            body_ui.spacing_mut().item_spacing = original_spacing;
+                        });
                     });
                     if let Some(attachments) = self.message_attachments.get(&message.id) {
                         for attachment in attachments {
@@ -2485,6 +2490,141 @@ fn format_bytes(size: i64) -> String {
         idx += 1;
     }
     format!("{value:.1}{}", units[idx])
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum RichSegmentStyle {
+    Normal,
+    Bold,
+    Italic,
+    Code,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RichSegment {
+    text: String,
+    style: RichSegmentStyle,
+}
+
+fn parse_rich_segments(body: &str) -> Vec<RichSegment> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut segments = Vec::new();
+    let mut buffer = String::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '`' {
+            if let Some(end) = chars[i + 1..].iter().position(|c| *c == '`') {
+                let end = i + 1 + end;
+                if end == i + 1 {
+                    buffer.push('`');
+                    i += 1;
+                    continue;
+                }
+                flush_rich_buffer(&mut buffer, &mut segments);
+                let text: String = chars[i + 1..end].iter().collect();
+                segments.push(RichSegment {
+                    text,
+                    style: RichSegmentStyle::Code,
+                });
+                i = end + 1;
+                continue;
+            }
+            buffer.push('`');
+            i += 1;
+            continue;
+        }
+
+        if ch == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            if let Some(end) = chars[i + 2..]
+                .windows(2)
+                .position(|pair| pair[0] == '*' && pair[1] == '*')
+            {
+                let end = i + 2 + end;
+                if end == i + 2 {
+                    buffer.push('*');
+                    buffer.push('*');
+                    i += 2;
+                    continue;
+                }
+                flush_rich_buffer(&mut buffer, &mut segments);
+                let text: String = chars[i + 2..end].iter().collect();
+                segments.push(RichSegment {
+                    text,
+                    style: RichSegmentStyle::Bold,
+                });
+                i = end + 2;
+                continue;
+            }
+            buffer.push('*');
+            buffer.push('*');
+            i += 2;
+            continue;
+        }
+
+        if ch == '*' || ch == '_' {
+            if let Some(end) = chars[i + 1..].iter().position(|c| *c == ch) {
+                let end = i + 1 + end;
+                if end == i + 1 {
+                    buffer.push(ch);
+                    i += 1;
+                    continue;
+                }
+                flush_rich_buffer(&mut buffer, &mut segments);
+                let text: String = chars[i + 1..end].iter().collect();
+                segments.push(RichSegment {
+                    text,
+                    style: RichSegmentStyle::Italic,
+                });
+                i = end + 1;
+                continue;
+            }
+            buffer.push(ch);
+            i += 1;
+            continue;
+        }
+
+        buffer.push(ch);
+        i += 1;
+    }
+
+    flush_rich_buffer(&mut buffer, &mut segments);
+    segments
+}
+
+fn flush_rich_buffer(buffer: &mut String, segments: &mut Vec<RichSegment>) {
+    if !buffer.is_empty() {
+        segments.push(RichSegment {
+            text: std::mem::take(buffer),
+            style: RichSegmentStyle::Normal,
+        });
+    }
+}
+
+fn render_message_body(ui: &mut egui::Ui, body: &str) {
+    let segments = parse_rich_segments(body);
+    if segments.is_empty() {
+        ui.label(body);
+        return;
+    }
+
+    for segment in segments {
+        let mut text = egui::RichText::new(segment.text);
+        match segment.style {
+            RichSegmentStyle::Normal => {}
+            RichSegmentStyle::Bold => {
+                text = text.strong();
+            }
+            RichSegmentStyle::Italic => {
+                text = text.italics();
+            }
+            RichSegmentStyle::Code => {
+                text = text.monospace();
+            }
+        }
+        ui.label(text);
+    }
 }
 
 fn main() {

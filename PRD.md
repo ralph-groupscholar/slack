@@ -54,6 +54,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Deferred opening the on-disk SQLite connection until the background hydrate completes to trim cold-start IO (`src/main.rs`).
 - Deferred the background hydrate thread until after the first frame renders to reduce cold-start work (`src/main.rs`).
 - Re-ran startup benchmarks after the deferred hydrate change (startup p50 218.37ms, p95 411.36ms) and refreshed `BENCHMARKS.md`.
+- Added inline rich text rendering for message bodies with bold/italic/code formatting (`src/main.rs`).
 
 ## Core Requirements
 
