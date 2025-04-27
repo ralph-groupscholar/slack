@@ -2722,7 +2722,7 @@ fn main() {
                 if app.needs_repaint || now >= app.next_repaint_at {
                     app.needs_repaint = false;
                     app.window.request_redraw();
-                    elwt.set_control_flow(ControlFlow::Poll);
+                    elwt.set_control_flow(ControlFlow::Wait);
                 } else {
                     elwt.set_control_flow(ControlFlow::WaitUntil(app.next_repaint_at));
                 }

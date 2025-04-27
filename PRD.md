@@ -58,6 +58,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Switched wgpu adapter power preference to LowPower to favor faster startup on macOS (`src/main.rs`).
 - Re-ran startup benchmarks after the LowPower adapter change (startup p50 209.63ms, p95 329.22ms) and refreshed `BENCHMARKS.md`.
 - Switched the UI render loop to event-driven repaint scheduling with wake signals from background workers to reduce idle CPU (`src/main.rs`).
+- Added an idle CPU benchmark script to sample process usage while the app is idle (`perf_tests/idle_cpu_bench.sh`).
+- Set the event loop to wait after requesting redraws (instead of polling) to reduce idle CPU overhead (`src/main.rs`).
 
 ## Core Requirements
 

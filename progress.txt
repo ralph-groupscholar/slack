@@ -361,3 +361,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Measure idle CPU and re-run startup benchmarks to confirm <200ms cold start.
+
+## Iteration 56 - February 6, 2026
+
+**Built:** Added an idle CPU benchmark script to sample process usage while the app is idle.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** perf_tests/idle_cpu_bench.sh, PRD.md, progress.txt
+**Next:** Run the idle CPU benchmark and re-run startup benchmarks to confirm <200ms cold start.
+
+## Iteration 57 - February 6, 2026
+
+**Built:** Set the event loop to wait after requesting redraws (instead of polling) to reduce idle CPU overhead.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Run the idle CPU benchmark and re-run startup benchmarks to confirm <200ms cold start.
