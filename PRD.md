@@ -60,6 +60,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Switched the UI render loop to event-driven repaint scheduling with wake signals from background workers to reduce idle CPU (`src/main.rs`).
 - Added an idle CPU benchmark script to sample process usage while the app is idle (`perf_tests/idle_cpu_bench.sh`).
 - Set the event loop to wait after requesting redraws (instead of polling) to reduce idle CPU overhead (`src/main.rs`).
+- Prevented repaint scheduling overflow when egui returns an effectively infinite delay and recorded the idle CPU benchmark result (avg 3.53%) (`src/main.rs`, `BENCHMARKS.md`).
 
 ## Core Requirements
 

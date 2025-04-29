@@ -375,3 +375,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Run the idle CPU benchmark and re-run startup benchmarks to confirm <200ms cold start.
+
+## Iteration 58 - February 6, 2026
+
+**Built:** Fixed repaint delay overflow that could panic when egui requested no repaint; ran the idle CPU benchmark and recorded results.
+**Performance:** Idle CPU avg 3.53%
+**Files changed:** src/main.rs, BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Reduce idle CPU toward <1% and re-run startup benchmarks to confirm <200ms cold start.

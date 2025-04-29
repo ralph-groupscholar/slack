@@ -1645,7 +1645,13 @@ impl App {
             .get(&egui::ViewportId::ROOT)
             .map(|output| output.repaint_delay)
             .unwrap_or(Duration::from_millis(16));
-        self.next_repaint_at = Instant::now() + repaint_delay;
+        let now = Instant::now();
+        self.next_repaint_at = if repaint_delay == Duration::MAX {
+            now + Duration::from_secs(60 * 60 * 24)
+        } else {
+            now.checked_add(repaint_delay)
+                .unwrap_or_else(|| now + Duration::from_secs(1))
+        };
         self.needs_repaint = repaint_delay.is_zero();
         if realtime_connect {
             self.realtime.connect();
