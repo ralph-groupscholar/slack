@@ -646,6 +646,7 @@ fn seed_messages() -> Vec<Message> {
 const MESSAGE_FETCH_LIMIT: i64 = 20;
 const THUMBNAIL_CACHE_LIMIT: usize = 24;
 const THUMBNAIL_ERROR_LIMIT: usize = 24;
+const IDLE_REPAINT_DELAY: Duration = Duration::from_secs(1);
 
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
@@ -1144,9 +1145,14 @@ impl App {
             }
         }
         self.realtime.poll();
+        let mut state_dirty = false;
         let incoming = self.realtime.take_incoming();
+        if !incoming.is_empty() {
+            state_dirty = true;
+        }
         let presence_updates = self.realtime.take_presence();
         if !presence_updates.is_empty() {
+            state_dirty = true;
             for update in presence_updates {
                 self.presence_state.insert(
                     update.user,
@@ -1157,9 +1163,14 @@ impl App {
                 );
             }
         }
-        self.drain_thumbnail_results();
-        self.apply_deferred_loads();
+        if self.drain_thumbnail_results() {
+            state_dirty = true;
+        }
+        if self.apply_deferred_loads() {
+            state_dirty = true;
+        }
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
+        let has_input_events = !raw_input.events.is_empty();
         let mut pending_send: Option<String> = None;
         let mut pending_attachments_send = Vec::new();
         let mut channel_switch: Option<i64> = None;
@@ -1640,11 +1651,14 @@ impl App {
                 }
             });
         });
-        let repaint_delay = full_output
+        let mut repaint_delay = full_output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
             .map(|output| output.repaint_delay)
             .unwrap_or(Duration::from_millis(16));
+        if repaint_delay.is_zero() && !has_input_events && !state_dirty {
+            repaint_delay = IDLE_REPAINT_DELAY;
+        }
         let now = Instant::now();
         self.next_repaint_at = if repaint_delay == Duration::MAX {
             now + Duration::from_secs(60 * 60 * 24)
@@ -2053,7 +2067,8 @@ impl App {
         });
     }
 
-    fn drain_thumbnail_results(&mut self) {
+    fn drain_thumbnail_results(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(result) = self.thumbnail_receiver.try_recv() {
             self.thumbnail_in_flight.remove(&result.path);
             if let Some(error) = result.error {
@@ -2061,6 +2076,7 @@ impl App {
                     .insert(result.path.clone(), error);
                 self.touch_thumbnail_error(&result.path);
                 self.enforce_thumbnail_cache_limits();
+                changed = true;
                 continue;
             }
             if let Some(image) = result.image {
@@ -2073,8 +2089,10 @@ impl App {
                     .insert(result.path.clone(), texture);
                 self.touch_thumbnail_cache(&result.path);
                 self.enforce_thumbnail_cache_limits();
+                changed = true;
             }
         }
+        changed
     }
 
     fn touch_thumbnail_cache(&mut self, path: &str) {
@@ -2105,17 +2123,19 @@ impl App {
         }
     }
 
-    fn apply_deferred_loads(&mut self) {
+    fn apply_deferred_loads(&mut self) -> bool {
         let result = match self.deferred_load_receiver.as_ref() {
             Some(receiver) => receiver.try_recv().ok(),
             None => None,
         };
         if let Some(result) = result {
+            let mut changed = false;
             if result.db_ready && self.db_is_fallback {
                 match Connection::open("ralph.db") {
                     Ok(conn) => {
                         self.db = conn;
                         self.db_is_fallback = false;
+                        changed = true;
                     }
                     Err(err) => {
                         eprintln!("db open error (deferred swap): {err}");
@@ -2126,6 +2146,7 @@ impl App {
             if !result.channels.is_empty() {
                 self.channels = result.channels;
                 self.composer_meta = build_composer_meta(&self.channels);
+                changed = true;
                 if !self
                     .channels
                     .iter()
@@ -2134,6 +2155,7 @@ impl App {
                     if let Some(channel) = self.channels.first() {
                         self.selected_channel_id = channel.id;
                         self.composer_focus_requested = true;
+                        changed = true;
                     }
                 }
             }
@@ -2141,6 +2163,7 @@ impl App {
                 self.messages = result.messages;
                 self.message_attachments = result.attachments;
                 self.messages_loaded = true;
+                changed = true;
             } else if self.selected_channel_id != selected_before {
                 self.messages = match load_messages(&self.db, self.selected_channel_id) {
                     Ok(messages) => messages,
@@ -2160,12 +2183,14 @@ impl App {
                         HashMap::new()
                     }
                 };
+                changed = true;
             }
             for (channel_id, members) in result.channel_members {
                 self.channel_members
                     .entry(channel_id)
                     .or_default()
                     .extend(members);
+                changed = true;
             }
             if !result.db_ready || self.db_is_fallback {
                 if let Err(err) = ensure_schema(&self.db) {
@@ -2173,7 +2198,9 @@ impl App {
                 }
             }
             self.deferred_load_receiver = None;
+            return changed;
         }
+        false
     }
 
     fn queue_thumbnail_load(&mut self, path: &str) {
