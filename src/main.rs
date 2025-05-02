@@ -1656,7 +1656,7 @@ impl App {
             .get(&egui::ViewportId::ROOT)
             .map(|output| output.repaint_delay)
             .unwrap_or(Duration::from_millis(16));
-        if repaint_delay.is_zero() && !has_input_events && !state_dirty {
+        if !has_input_events && !state_dirty && repaint_delay < IDLE_REPAINT_DELAY {
             repaint_delay = IDLE_REPAINT_DELAY;
         }
         let now = Instant::now();
