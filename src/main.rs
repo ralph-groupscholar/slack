@@ -690,6 +690,14 @@ fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         )",
         [],
     )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS saved_messages (
+            message_id INTEGER PRIMARY KEY,
+            saved_at TEXT NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES messages(id)
+        )",
+        [],
+    )?;
     let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
     let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
     let mut has_channel = false;
@@ -735,6 +743,19 @@ fn seed_messages_if_empty(conn: &mut Connection) -> Result<(), rusqlite::Error> 
             )?;
         }
         tx.commit()?;
+    }
+    Ok(())
+}
+
+fn seed_saved_messages_if_empty(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM saved_messages", [], |row| row.get(0))?;
+    if count == 0 {
+        conn.execute(
+            "INSERT OR IGNORE INTO saved_messages (message_id, saved_at)
+            SELECT id, '09:00' FROM messages ORDER BY id ASC LIMIT 2",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -912,6 +933,7 @@ struct DeferredLoadResult {
     messages: Vec<Message>,
     attachments: HashMap<i64, Vec<Attachment>>,
     channel_members: HashMap<i64, HashSet<String>>,
+    saved_messages: HashSet<i64>,
     db_ready: bool,
 }
 
@@ -954,11 +976,14 @@ struct App {
     search_channel_only: bool,
     search_last_channel_only: bool,
     messages_loaded: bool,
+    saved_messages: HashSet<i64>,
+    show_saved_only: bool,
     message_attachments: HashMap<i64, Vec<Attachment>>,
     attachment_path_drafts: HashMap<i64, String>,
     pending_attachments: HashMap<i64, Vec<PendingAttachment>>,
     attachment_error: Option<String>,
     attachment_action_error: Option<String>,
+    saved_action_error: Option<String>,
     attachment_thumbnails: HashMap<String, egui::TextureHandle>,
     attachment_thumbnail_errors: HashMap<String, String>,
     thumbnail_cache_order: VecDeque<String>,
@@ -1108,11 +1133,14 @@ impl App {
             search_channel_only: true,
             search_last_channel_only: true,
             messages_loaded: false,
+            saved_messages: HashSet::new(),
+            show_saved_only: false,
             message_attachments: HashMap::new(),
             attachment_path_drafts: HashMap::new(),
             pending_attachments: HashMap::new(),
             attachment_error: None,
             attachment_action_error: None,
+            saved_action_error: None,
             attachment_thumbnails: HashMap::new(),
             attachment_thumbnail_errors: HashMap::new(),
             thumbnail_cache_order: VecDeque::new(),
@@ -1178,6 +1206,7 @@ impl App {
         let mut search_clear = false;
         let mut realtime_connect = false;
         let mut realtime_disconnect = false;
+        let mut saved_toggle: Option<i64> = None;
         let egui_ctx = self.egui_ctx.clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::SidePanel::left("channel_list")
@@ -1363,24 +1392,56 @@ impl App {
                         && self.search_last_channel_only == self.search_channel_only;
                 let show_channel =
                     show_search_results && !self.search_channel_only;
-        let messages = if show_search_results {
-            &self.search_results
-        } else {
-            &self.messages
-        };
-        if show_search_results && messages.is_empty() {
-            ui.label(
-                egui::RichText::new("No matches found.")
-                    .small()
-                    .color(egui::Color32::from_rgb(160, 170, 190)),
-            );
-        } else if !show_search_results && !self.messages_loaded && messages.is_empty() {
-            ui.label(
-                egui::RichText::new("Loading messages...")
-                    .small()
-                    .color(egui::Color32::from_rgb(160, 170, 190)),
-            );
-        }
+                ui.add_enabled_ui(self.messages_loaded, |ui| {
+                    ui.horizontal(|row| {
+                        row.checkbox(&mut self.show_saved_only, "Saved only");
+                        let saved_in_view = self
+                            .messages
+                            .iter()
+                            .filter(|message| self.saved_messages.contains(&message.id))
+                            .count();
+                        row.label(
+                            egui::RichText::new(format!("Saved in view: {saved_in_view}"))
+                                .small()
+                                .color(egui::Color32::from_rgb(120, 130, 150)),
+                        );
+                        if show_search_results {
+                            row.label(
+                                egui::RichText::new("Saved filter ignored in search.")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(120, 130, 150)),
+                            );
+                        }
+                    });
+                });
+                let mut messages: Vec<&Message> = if show_search_results {
+                    self.search_results.iter().collect()
+                } else {
+                    self.messages.iter().collect()
+                };
+                let saved_only_active = !show_search_results && self.show_saved_only;
+                if saved_only_active {
+                    messages.retain(|message| self.saved_messages.contains(&message.id));
+                }
+                if show_search_results && messages.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No matches found.")
+                            .small()
+                            .color(egui::Color32::from_rgb(160, 170, 190)),
+                    );
+                } else if !show_search_results && !self.messages_loaded && self.messages.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Loading messages...")
+                            .small()
+                            .color(egui::Color32::from_rgb(160, 170, 190)),
+                    );
+                } else if saved_only_active && messages.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No saved messages in this channel.")
+                            .small()
+                            .color(egui::Color32::from_rgb(160, 170, 190)),
+                    );
+                }
                 let mut thumbnail_requests: Vec<String> = Vec::new();
                 let mut touched_thumbnails: Vec<String> = Vec::new();
                 let mut touched_errors: Vec<String> = Vec::new();
@@ -1395,6 +1456,19 @@ impl App {
                             egui::RichText::new(&message.sent_at)
                                 .color(egui::Color32::from_rgb(140, 150, 170)),
                         );
+                        let saved = self.saved_messages.contains(&message.id);
+                        let save_label = if saved { "★" } else { "☆" };
+                        if row
+                            .button(save_label)
+                            .on_hover_text(if saved {
+                                "Remove from saved"
+                            } else {
+                                "Save message"
+                            })
+                            .clicked()
+                        {
+                            saved_toggle = Some(message.id);
+                        }
                         if show_channel {
                             row.label(
                                 egui::RichText::new(self.channel_label(message.channel_id))
@@ -1504,6 +1578,13 @@ impl App {
                     self.touch_thumbnail_error(&path);
                 }
                 if let Some(error) = &self.attachment_action_error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                    );
+                }
+                if let Some(error) = &self.saved_action_error {
                     ui.label(
                         egui::RichText::new(error)
                             .small()
@@ -1809,6 +1890,32 @@ impl App {
             }
         }
 
+        if let Some(message_id) = saved_toggle {
+            if self.saved_messages.contains(&message_id) {
+                match remove_saved_message(&self.db, message_id) {
+                    Ok(()) => {
+                        self.saved_messages.remove(&message_id);
+                        self.saved_action_error = None;
+                    }
+                    Err(err) => {
+                        self.saved_action_error =
+                            Some(format!("Could not remove saved message: {err}"));
+                    }
+                }
+            } else {
+                let saved_at = format_timestamp_utc();
+                match save_message(&self.db, message_id, &saved_at) {
+                    Ok(()) => {
+                        self.saved_messages.insert(message_id);
+                        self.saved_action_error = None;
+                    }
+                    Err(err) => {
+                        self.saved_action_error = Some(format!("Could not save message: {err}"));
+                    }
+                }
+            }
+        }
+
         if search_clear {
             self.search_query.clear();
             self.search_last_query.clear();
@@ -1999,6 +2106,7 @@ impl App {
                         messages,
                         attachments: HashMap::new(),
                         channel_members: HashMap::new(),
+                        saved_messages: HashSet::new(),
                         db_ready: false,
                     });
                     let _ = event_proxy.send_event(UserEvent::Wake);
@@ -2015,6 +2123,9 @@ impl App {
             }
             if let Err(err) = seed_messages_if_empty(&mut db) {
                 eprintln!("db seed error (deferred): {err}");
+            }
+            if let Err(err) = seed_saved_messages_if_empty(&mut db) {
+                eprintln!("db seed saved error (deferred): {err}");
             }
             let channels = match load_channels(&db) {
                 Ok(channels) if !channels.is_empty() => channels,
@@ -2055,12 +2166,20 @@ impl App {
                     HashMap::new()
                 }
             };
+            let saved_messages = match load_saved_message_ids(&db) {
+                Ok(saved) => saved,
+                Err(err) => {
+                    eprintln!("db saved load error (deferred): {err}");
+                    HashSet::new()
+                }
+            };
             let _ = deferred_load_sender.send(DeferredLoadResult {
                 channel_id: load_channel_id,
                 channels,
                 messages,
                 attachments,
                 channel_members,
+                saved_messages,
                 db_ready,
             });
             let _ = event_proxy.send_event(UserEvent::Wake);
@@ -2192,6 +2311,7 @@ impl App {
                     .extend(members);
                 changed = true;
             }
+            self.saved_messages = result.saved_messages;
             if !result.db_ready || self.db_is_fallback {
                 if let Err(err) = ensure_schema(&self.db) {
                     eprintln!("db schema error: {err}");
@@ -2454,6 +2574,36 @@ fn load_attachments_for_message_ids(
             .push(attachment);
     }
     Ok(map)
+}
+
+fn load_saved_message_ids(conn: &Connection) -> Result<HashSet<i64>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT message_id FROM saved_messages")?;
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+    let mut saved = HashSet::new();
+    for row in rows {
+        saved.insert(row?);
+    }
+    Ok(saved)
+}
+
+fn save_message(
+    conn: &Connection,
+    message_id: i64,
+    saved_at: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT OR IGNORE INTO saved_messages (message_id, saved_at) VALUES (?1, ?2)",
+        params![message_id, saved_at],
+    )?;
+    Ok(())
+}
+
+fn remove_saved_message(conn: &Connection, message_id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM saved_messages WHERE message_id = ?1",
+        params![message_id],
+    )?;
+    Ok(())
 }
 
 fn load_attachment_thumbnail_image(path: &str) -> Result<egui::ColorImage, String> {
