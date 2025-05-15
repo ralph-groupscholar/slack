@@ -389,3 +389,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, progress.txt, ralph-progress.md
 **Next:** Re-run idle CPU benchmark to see if we hit <1% and adjust repaint policy if needed.
+
+## Iteration 60 - February 8, 2026
+
+**Built:** Reduced background/occluded repaint scheduling by tracking window focus + occlusion and throttling repaint delay.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, progress.txt
+**Next:** Re-run idle CPU benchmark (focused vs background) to confirm lower idle usage and tweak repaint delays if needed.

@@ -39,6 +39,14 @@ struct Message {
     channel_id: i64,
 }
 
+#[derive(Clone)]
+struct MessageReaction {
+    message_id: i64,
+    emoji: String,
+    author: String,
+    reacted_at: String,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChannelKind {
     Channel,
@@ -647,6 +655,7 @@ const MESSAGE_FETCH_LIMIT: i64 = 20;
 const THUMBNAIL_CACHE_LIMIT: usize = 24;
 const THUMBNAIL_ERROR_LIMIT: usize = 24;
 const IDLE_REPAINT_DELAY: Duration = Duration::from_secs(1);
+const BACKGROUND_REPAINT_DELAY: Duration = Duration::from_secs(5);
 
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
@@ -694,6 +703,17 @@ fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         "CREATE TABLE IF NOT EXISTS saved_messages (
             message_id INTEGER PRIMARY KEY,
             saved_at TEXT NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES messages(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS message_reactions (
+            message_id INTEGER NOT NULL,
+            emoji TEXT NOT NULL,
+            author TEXT NOT NULL,
+            reacted_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, emoji, author),
             FOREIGN KEY(message_id) REFERENCES messages(id)
         )",
         [],
@@ -760,6 +780,31 @@ fn seed_saved_messages_if_empty(conn: &mut Connection) -> Result<(), rusqlite::E
     Ok(())
 }
 
+fn seed_reactions_if_empty(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM message_reactions", [], |row| row.get(0))?;
+    if count == 0 {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO message_reactions (message_id, emoji, author, reacted_at)
+            SELECT id, '👍', 'Ava', '09:05' FROM messages ORDER BY id ASC LIMIT 1",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO message_reactions (message_id, emoji, author, reacted_at)
+            SELECT id, '🎉', 'You' COLLATE NOCASE, '09:06' FROM messages ORDER BY id ASC LIMIT 1",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO message_reactions (message_id, emoji, author, reacted_at)
+            SELECT id, '❤️', 'Noah', '09:08' FROM messages ORDER BY id ASC LIMIT 1 OFFSET 1",
+            [],
+        )?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
 fn load_channels(conn: &Connection) -> Result<Vec<Channel>, rusqlite::Error> {
     let mut stmt = conn.prepare("SELECT id, name, kind FROM channels ORDER BY id ASC")?;
     let rows = stmt.query_map([], |row| {
@@ -803,12 +848,73 @@ fn load_messages(conn: &Connection, channel_id: i64) -> Result<Vec<Message>, rus
     Ok(messages)
 }
 
+fn load_reactions_for_message_ids(
+    conn: &Connection,
+    message_ids: &[i64],
+) -> Result<HashMap<i64, Vec<MessageReaction>>, rusqlite::Error> {
+    if message_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = vec!["?"; message_ids.len()].join(", ");
+    let query = format!(
+        "SELECT message_id, emoji, author, reacted_at
+        FROM message_reactions
+        WHERE message_id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map(params_from_iter(message_ids), |row| {
+        Ok(MessageReaction {
+            message_id: row.get(0)?,
+            emoji: row.get(1)?,
+            author: row.get(2)?,
+            reacted_at: row.get(3)?,
+        })
+    })?;
+    let mut reactions: HashMap<i64, Vec<MessageReaction>> = HashMap::new();
+    for reaction in rows {
+        let reaction = reaction?;
+        reactions
+            .entry(reaction.message_id)
+            .or_default()
+            .push(reaction);
+    }
+    Ok(reactions)
+}
+
 fn insert_message(conn: &Connection, message: &Message) -> Result<i64, rusqlite::Error> {
     conn.execute(
         "INSERT INTO messages (author, body, sent_at, channel_id) VALUES (?1, ?2, ?3, ?4)",
         params![message.author, message.body, message.sent_at, message.channel_id],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+fn add_reaction(
+    conn: &Connection,
+    message_id: i64,
+    emoji: &str,
+    author: &str,
+    reacted_at: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT OR IGNORE INTO message_reactions (message_id, emoji, author, reacted_at)
+        VALUES (?1, ?2, ?3, ?4)",
+        params![message_id, emoji, author, reacted_at],
+    )?;
+    Ok(())
+}
+
+fn remove_reaction(
+    conn: &Connection,
+    message_id: i64,
+    emoji: &str,
+    author: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM message_reactions WHERE message_id = ?1 AND emoji = ?2 AND author = ?3",
+        params![message_id, emoji, author],
+    )?;
+    Ok(())
 }
 
 fn load_channel_members(
@@ -934,6 +1040,7 @@ struct DeferredLoadResult {
     attachments: HashMap<i64, Vec<Attachment>>,
     channel_members: HashMap<i64, HashSet<String>>,
     saved_messages: HashSet<i64>,
+    message_reactions: HashMap<i64, Vec<MessageReaction>>,
     db_ready: bool,
 }
 
@@ -954,6 +1061,8 @@ struct App {
     boot_started: Instant,
     next_repaint_at: Instant,
     needs_repaint: bool,
+    window_focused: bool,
+    window_occluded: bool,
     first_frame_logged: bool,
     exit_after_first_frame: bool,
     exit_requested: bool,
@@ -979,11 +1088,13 @@ struct App {
     saved_messages: HashSet<i64>,
     show_saved_only: bool,
     message_attachments: HashMap<i64, Vec<Attachment>>,
+    message_reactions: HashMap<i64, Vec<MessageReaction>>,
     attachment_path_drafts: HashMap<i64, String>,
     pending_attachments: HashMap<i64, Vec<PendingAttachment>>,
     attachment_error: Option<String>,
     attachment_action_error: Option<String>,
     saved_action_error: Option<String>,
+    reaction_action_error: Option<String>,
     attachment_thumbnails: HashMap<String, egui::TextureHandle>,
     attachment_thumbnail_errors: HashMap<String, String>,
     thumbnail_cache_order: VecDeque<String>,
@@ -1108,6 +1219,8 @@ impl App {
             boot_started,
             next_repaint_at: Instant::now(),
             needs_repaint: true,
+            window_focused: true,
+            window_occluded: false,
             first_frame_logged: false,
             exit_after_first_frame,
             exit_requested: false,
@@ -1737,7 +1850,10 @@ impl App {
             .get(&egui::ViewportId::ROOT)
             .map(|output| output.repaint_delay)
             .unwrap_or(Duration::from_millis(16));
-        if !has_input_events && !state_dirty && repaint_delay < IDLE_REPAINT_DELAY {
+        let suppress_repaint = self.window_occluded || !self.window_focused;
+        if suppress_repaint {
+            repaint_delay = BACKGROUND_REPAINT_DELAY;
+        } else if !has_input_events && !state_dirty && repaint_delay < IDLE_REPAINT_DELAY {
             repaint_delay = IDLE_REPAINT_DELAY;
         }
         let now = Instant::now();
@@ -2878,6 +2994,16 @@ fn main() {
                 WindowEvent::RedrawRequested => app.render(),
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(size) => app.resize(size),
+                WindowEvent::Focused(focused) => {
+                    app.window_focused = focused;
+                    app.needs_repaint = true;
+                    app.window.request_redraw();
+                }
+                WindowEvent::Occluded(occluded) => {
+                    app.window_occluded = occluded;
+                    app.needs_repaint = true;
+                    app.window.request_redraw();
+                }
                 WindowEvent::ScaleFactorChanged {
                     mut inner_size_writer,
                     ..
