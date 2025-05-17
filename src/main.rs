@@ -720,6 +720,15 @@ fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         )",
         [],
     )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS message_drafts (
+            channel_id INTEGER PRIMARY KEY,
+            body TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(channel_id) REFERENCES channels(id)
+        )",
+        [],
+    )?;
     let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
     let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
     let mut has_channel = false;
@@ -1044,6 +1053,7 @@ struct DeferredLoadResult {
     channel_members: HashMap<i64, HashSet<String>>,
     saved_messages: HashSet<i64>,
     message_reactions: HashMap<i64, Vec<MessageReaction>>,
+    drafts: HashMap<i64, String>,
     db_ready: bool,
 }
 
@@ -1876,9 +1886,20 @@ impl App {
                         if composer.changed() {
                             if draft.trim().is_empty() {
                                 self.typing_state.remove(&self.selected_channel_id);
+                                if let Err(err) = delete_draft(&self.db, self.selected_channel_id) {
+                                    eprintln!("db draft delete error: {err}");
+                                }
                             } else {
                                 self.typing_state
                                     .insert(self.selected_channel_id, Instant::now());
+                                if let Err(err) = save_draft(
+                                    &self.db,
+                                    self.selected_channel_id,
+                                    draft,
+                                    &format_timestamp_utc(),
+                                ) {
+                                    eprintln!("db draft save error: {err}");
+                                }
                             }
                         }
                         if send_now {
@@ -1890,6 +1911,9 @@ impl App {
                                 draft.clear();
                                 self.typing_state.remove(&self.selected_channel_id);
                                 self.composer_focus_requested = true;
+                                if let Err(err) = delete_draft(&self.db, self.selected_channel_id) {
+                                    eprintln!("db draft delete error: {err}");
+                                }
                             }
                         }
                     });
@@ -2373,6 +2397,7 @@ impl App {
                         channel_members: HashMap::new(),
                         saved_messages: HashSet::new(),
                         message_reactions: HashMap::new(),
+                        drafts: HashMap::new(),
                         db_ready: false,
                     });
                     let _ = event_proxy.send_event(UserEvent::Wake);
@@ -2449,6 +2474,13 @@ impl App {
                     HashSet::new()
                 }
             };
+            let drafts = match load_drafts(&db) {
+                Ok(drafts) => drafts,
+                Err(err) => {
+                    eprintln!("db drafts load error (deferred): {err}");
+                    HashMap::new()
+                }
+            };
             let _ = deferred_load_sender.send(DeferredLoadResult {
                 channel_id: load_channel_id,
                 channels,
@@ -2457,6 +2489,7 @@ impl App {
                 channel_members,
                 saved_messages,
                 message_reactions,
+                drafts,
                 db_ready,
             });
             let _ = event_proxy.send_event(UserEvent::Wake);
@@ -2600,6 +2633,10 @@ impl App {
                 changed = true;
             }
             self.saved_messages = result.saved_messages;
+            if !result.drafts.is_empty() {
+                self.composer_drafts = result.drafts;
+                changed = true;
+            }
             if !result.db_ready || self.db_is_fallback {
                 if let Err(err) = ensure_schema(&self.db) {
                     eprintln!("db schema error: {err}");
@@ -2872,6 +2909,41 @@ fn load_saved_message_ids(conn: &Connection) -> Result<HashSet<i64>, rusqlite::E
         saved.insert(row?);
     }
     Ok(saved)
+}
+
+fn load_drafts(conn: &Connection) -> Result<HashMap<i64, String>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT channel_id, body FROM message_drafts")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+    let mut drafts = HashMap::new();
+    for row in rows {
+        let (channel_id, body) = row?;
+        drafts.insert(channel_id, body);
+    }
+    Ok(drafts)
+}
+
+fn save_draft(
+    conn: &Connection,
+    channel_id: i64,
+    body: &str,
+    updated_at: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO message_drafts (channel_id, body, updated_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(channel_id)
+        DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+        params![channel_id, body, updated_at],
+    )?;
+    Ok(())
+}
+
+fn delete_draft(conn: &Connection, channel_id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM message_drafts WHERE channel_id = ?1",
+        params![channel_id],
+    )?;
+    Ok(())
 }
 
 fn save_message(
