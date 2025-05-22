@@ -710,6 +710,15 @@ fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS pinned_messages (
+            message_id INTEGER PRIMARY KEY,
+            pinned_at TEXT NOT NULL,
+            pinned_by TEXT NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES messages(id)
+        )",
+        [],
+    )?;
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS message_reactions (
             message_id INTEGER NOT NULL,
             emoji TEXT NOT NULL,
@@ -785,6 +794,19 @@ fn seed_saved_messages_if_empty(conn: &mut Connection) -> Result<(), rusqlite::E
         conn.execute(
             "INSERT OR IGNORE INTO saved_messages (message_id, saved_at)
             SELECT id, '09:00' FROM messages ORDER BY id ASC LIMIT 2",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn seed_pinned_messages_if_empty(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM pinned_messages", [], |row| row.get(0))?;
+    if count == 0 {
+        conn.execute(
+            "INSERT OR IGNORE INTO pinned_messages (message_id, pinned_at, pinned_by)
+            SELECT id, '09:12', 'Ava' FROM messages ORDER BY id ASC LIMIT 1",
             [],
         )?;
     }
@@ -1052,6 +1074,7 @@ struct DeferredLoadResult {
     attachments: HashMap<i64, Vec<Attachment>>,
     channel_members: HashMap<i64, HashSet<String>>,
     saved_messages: HashSet<i64>,
+    pinned_messages: HashSet<i64>,
     message_reactions: HashMap<i64, Vec<MessageReaction>>,
     drafts: HashMap<i64, String>,
     db_ready: bool,
@@ -1099,7 +1122,9 @@ struct App {
     search_last_channel_only: bool,
     messages_loaded: bool,
     saved_messages: HashSet<i64>,
+    pinned_messages: HashSet<i64>,
     show_saved_only: bool,
+    show_pinned_only: bool,
     message_attachments: HashMap<i64, Vec<Attachment>>,
     message_reactions: HashMap<i64, Vec<MessageReaction>>,
     attachment_path_drafts: HashMap<i64, String>,
@@ -1107,6 +1132,7 @@ struct App {
     attachment_error: Option<String>,
     attachment_action_error: Option<String>,
     saved_action_error: Option<String>,
+    pinned_action_error: Option<String>,
     reaction_action_error: Option<String>,
     attachment_thumbnails: HashMap<String, egui::TextureHandle>,
     attachment_thumbnail_errors: HashMap<String, String>,
@@ -1260,7 +1286,9 @@ impl App {
             search_last_channel_only: true,
             messages_loaded: false,
             saved_messages: HashSet::new(),
+            pinned_messages: HashSet::new(),
             show_saved_only: false,
+            show_pinned_only: false,
             message_attachments: HashMap::new(),
             message_reactions: HashMap::new(),
             attachment_path_drafts: HashMap::new(),
@@ -1268,6 +1296,7 @@ impl App {
             attachment_error: None,
             attachment_action_error: None,
             saved_action_error: None,
+            pinned_action_error: None,
             reaction_action_error: None,
             attachment_thumbnails: HashMap::new(),
             attachment_thumbnail_errors: HashMap::new(),
@@ -1335,6 +1364,7 @@ impl App {
         let mut realtime_connect = false;
         let mut realtime_disconnect = false;
         let mut saved_toggle: Option<i64> = None;
+        let mut pinned_toggle: Option<i64> = None;
         let mut reaction_toggle: Option<(i64, String, bool)> = None;
         let egui_ctx = self.egui_ctx.clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
@@ -1534,9 +1564,26 @@ impl App {
                                 .small()
                                 .color(egui::Color32::from_rgb(120, 130, 150)),
                         );
+                        row.add_space(10.0);
+                        row.checkbox(&mut self.show_pinned_only, "Pinned only");
+                        let pinned_in_view = self
+                            .messages
+                            .iter()
+                            .filter(|message| self.pinned_messages.contains(&message.id))
+                            .count();
+                        row.label(
+                            egui::RichText::new(format!("Pinned in view: {pinned_in_view}"))
+                                .small()
+                                .color(egui::Color32::from_rgb(120, 130, 150)),
+                        );
                         if show_search_results {
                             row.label(
                                 egui::RichText::new("Saved filter ignored in search.")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(120, 130, 150)),
+                            );
+                            row.label(
+                                egui::RichText::new("Pinned filter ignored in search.")
                                     .small()
                                     .color(egui::Color32::from_rgb(120, 130, 150)),
                             );
@@ -1549,8 +1596,12 @@ impl App {
                     self.messages.iter().collect()
                 };
                 let saved_only_active = !show_search_results && self.show_saved_only;
+                let pinned_only_active = !show_search_results && self.show_pinned_only;
                 if saved_only_active {
                     messages.retain(|message| self.saved_messages.contains(&message.id));
+                }
+                if pinned_only_active {
+                    messages.retain(|message| self.pinned_messages.contains(&message.id));
                 }
                 if show_search_results && messages.is_empty() {
                     ui.label(
@@ -1564,9 +1615,16 @@ impl App {
                             .small()
                             .color(egui::Color32::from_rgb(160, 170, 190)),
                     );
-                } else if saved_only_active && messages.is_empty() {
+                } else if (saved_only_active || pinned_only_active) && messages.is_empty() {
+                    let empty_label = if saved_only_active && pinned_only_active {
+                        "No saved and pinned messages in this channel."
+                    } else if saved_only_active {
+                        "No saved messages in this channel."
+                    } else {
+                        "No pinned messages in this channel."
+                    };
                     ui.label(
-                        egui::RichText::new("No saved messages in this channel.")
+                        egui::RichText::new(empty_label)
                             .small()
                             .color(egui::Color32::from_rgb(160, 170, 190)),
                     );
@@ -1585,6 +1643,15 @@ impl App {
                             egui::RichText::new(&message.sent_at)
                                 .color(egui::Color32::from_rgb(140, 150, 170)),
                         );
+                        let pinned = self.pinned_messages.contains(&message.id);
+                        let pin_label = if pinned { "📌" } else { "📍" };
+                        if row
+                            .button(pin_label)
+                            .on_hover_text(if pinned { "Unpin message" } else { "Pin message" })
+                            .clicked()
+                        {
+                            pinned_toggle = Some(message.id);
+                        }
                         let saved = self.saved_messages.contains(&message.id);
                         let save_label = if saved { "★" } else { "☆" };
                         if row
@@ -1759,6 +1826,13 @@ impl App {
                     );
                 }
                 if let Some(error) = &self.saved_action_error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                    );
+                }
+                if let Some(error) = &self.pinned_action_error {
                     ui.label(
                         egui::RichText::new(error)
                             .small()
@@ -2138,6 +2212,32 @@ impl App {
             }
         }
 
+        if let Some(message_id) = pinned_toggle {
+            if self.pinned_messages.contains(&message_id) {
+                match remove_pinned_message(&self.db, message_id) {
+                    Ok(()) => {
+                        self.pinned_messages.remove(&message_id);
+                        self.pinned_action_error = None;
+                    }
+                    Err(err) => {
+                        self.pinned_action_error =
+                            Some(format!("Could not unpin message: {err}"));
+                    }
+                }
+            } else {
+                let pinned_at = format_timestamp_utc();
+                match pin_message(&self.db, message_id, &pinned_at, "you") {
+                    Ok(()) => {
+                        self.pinned_messages.insert(message_id);
+                        self.pinned_action_error = None;
+                    }
+                    Err(err) => {
+                        self.pinned_action_error = Some(format!("Could not pin message: {err}"));
+                    }
+                }
+            }
+        }
+
         if let Some((message_id, emoji, reacted)) = reaction_toggle {
             if reacted {
                 match remove_reaction(&self.db, message_id, &emoji, "you") {
@@ -2396,6 +2496,7 @@ impl App {
                         attachments: HashMap::new(),
                         channel_members: HashMap::new(),
                         saved_messages: HashSet::new(),
+                        pinned_messages: HashSet::new(),
                         message_reactions: HashMap::new(),
                         drafts: HashMap::new(),
                         db_ready: false,
@@ -2417,6 +2518,9 @@ impl App {
             }
             if let Err(err) = seed_saved_messages_if_empty(&mut db) {
                 eprintln!("db seed saved error (deferred): {err}");
+            }
+            if let Err(err) = seed_pinned_messages_if_empty(&mut db) {
+                eprintln!("db seed pinned error (deferred): {err}");
             }
             if let Err(err) = seed_reactions_if_empty(&mut db) {
                 eprintln!("db seed reactions error (deferred): {err}");
@@ -2474,6 +2578,13 @@ impl App {
                     HashSet::new()
                 }
             };
+            let pinned_messages = match load_pinned_message_ids(&db) {
+                Ok(pinned) => pinned,
+                Err(err) => {
+                    eprintln!("db pinned load error (deferred): {err}");
+                    HashSet::new()
+                }
+            };
             let drafts = match load_drafts(&db) {
                 Ok(drafts) => drafts,
                 Err(err) => {
@@ -2488,6 +2599,7 @@ impl App {
                 attachments,
                 channel_members,
                 saved_messages,
+                pinned_messages,
                 message_reactions,
                 drafts,
                 db_ready,
@@ -2633,6 +2745,7 @@ impl App {
                 changed = true;
             }
             self.saved_messages = result.saved_messages;
+            self.pinned_messages = result.pinned_messages;
             if !result.drafts.is_empty() {
                 self.composer_drafts = result.drafts;
                 changed = true;
@@ -2911,6 +3024,16 @@ fn load_saved_message_ids(conn: &Connection) -> Result<HashSet<i64>, rusqlite::E
     Ok(saved)
 }
 
+fn load_pinned_message_ids(conn: &Connection) -> Result<HashSet<i64>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT message_id FROM pinned_messages")?;
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+    let mut pinned = HashSet::new();
+    for row in rows {
+        pinned.insert(row?);
+    }
+    Ok(pinned)
+}
+
 fn load_drafts(conn: &Connection) -> Result<HashMap<i64, String>, rusqlite::Error> {
     let mut stmt = conn.prepare("SELECT channel_id, body FROM message_drafts")?;
     let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
@@ -2961,6 +3084,28 @@ fn save_message(
 fn remove_saved_message(conn: &Connection, message_id: i64) -> Result<(), rusqlite::Error> {
     conn.execute(
         "DELETE FROM saved_messages WHERE message_id = ?1",
+        params![message_id],
+    )?;
+    Ok(())
+}
+
+fn pin_message(
+    conn: &Connection,
+    message_id: i64,
+    pinned_at: &str,
+    pinned_by: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT OR IGNORE INTO pinned_messages (message_id, pinned_at, pinned_by)
+        VALUES (?1, ?2, ?3)",
+        params![message_id, pinned_at, pinned_by],
+    )?;
+    Ok(())
+}
+
+fn remove_pinned_message(conn: &Connection, message_id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM pinned_messages WHERE message_id = ?1",
         params![message_id],
     )?;
     Ok(())
