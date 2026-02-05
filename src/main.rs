@@ -1,12 +1,16 @@
 use std::{
     collections::HashMap,
+    sync::mpsc,
     sync::Arc,
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use egui_wgpu::{Renderer, ScreenDescriptor};
 use egui_winit::State as EguiWinitState;
 use rusqlite::{params, Connection};
+use tungstenite::connect;
+use url::Url;
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::{
     dpi::PhysicalSize,
@@ -56,6 +60,139 @@ struct Channel {
 struct ComposerMeta {
     placeholder: String,
     typing_stub: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RealtimeStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+impl RealtimeStatus {
+    fn label(self) -> &'static str {
+        match self {
+            RealtimeStatus::Disconnected => "Disconnected",
+            RealtimeStatus::Connecting => "Connecting",
+            RealtimeStatus::Connected => "Connected",
+        }
+    }
+}
+
+enum RealtimeCommand {
+    Connect,
+    Disconnect,
+}
+
+struct RealtimeEvent {
+    status: RealtimeStatus,
+    message: Option<String>,
+    error: Option<String>,
+}
+
+struct RealtimeClient {
+    status: RealtimeStatus,
+    last_message: Option<String>,
+    last_error: Option<String>,
+    target_url: String,
+    cmd_tx: mpsc::Sender<RealtimeCommand>,
+    evt_rx: mpsc::Receiver<RealtimeEvent>,
+}
+
+impl RealtimeClient {
+    fn new(target_url: String) -> Self {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (evt_tx, evt_rx) = mpsc::channel();
+        spawn_realtime_worker(cmd_rx, evt_tx, target_url.clone());
+        Self {
+            status: RealtimeStatus::Disconnected,
+            last_message: None,
+            last_error: None,
+            target_url,
+            cmd_tx,
+            evt_rx,
+        }
+    }
+
+    fn connect(&self) {
+        let _ = self.cmd_tx.send(RealtimeCommand::Connect);
+    }
+
+    fn disconnect(&self) {
+        let _ = self.cmd_tx.send(RealtimeCommand::Disconnect);
+    }
+
+    fn poll(&mut self) {
+        while let Ok(event) = self.evt_rx.try_recv() {
+            self.status = event.status;
+            self.last_message = event.message;
+            self.last_error = event.error;
+        }
+    }
+}
+
+fn spawn_realtime_worker(
+    cmd_rx: mpsc::Receiver<RealtimeCommand>,
+    evt_tx: mpsc::Sender<RealtimeEvent>,
+    target_url: String,
+) {
+    thread::spawn(move || {
+        let mut connected = false;
+        let mut socket: Option<
+            tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+        > = None;
+        while let Ok(command) = cmd_rx.recv() {
+            match command {
+                RealtimeCommand::Connect => {
+                    if connected {
+                        continue;
+                    }
+                    let _ = evt_tx.send(RealtimeEvent {
+                        status: RealtimeStatus::Connecting,
+                        message: Some(format!("Dialing {target_url}")),
+                        error: None,
+                    });
+                    match Url::parse(&target_url)
+                        .map_err(|err| err.to_string())
+                        .and_then(|url| {
+                            connect(url)
+                                .map(|(socket, _response)| socket)
+                                .map_err(|err| err.to_string())
+                        }) {
+                        Ok(ws) => {
+                            connected = true;
+                            socket = Some(ws);
+                            let _ = evt_tx.send(RealtimeEvent {
+                                status: RealtimeStatus::Connected,
+                                message: Some("Handshake complete".to_string()),
+                                error: None,
+                            });
+                        }
+                        Err(err) => {
+                            connected = false;
+                            socket = None;
+                            let _ = evt_tx.send(RealtimeEvent {
+                                status: RealtimeStatus::Disconnected,
+                                message: None,
+                                error: Some(err),
+                            });
+                        }
+                    }
+                }
+                RealtimeCommand::Disconnect => {
+                    if let Some(mut ws) = socket.take() {
+                        let _ = ws.close(None);
+                    }
+                    connected = false;
+                    let _ = evt_tx.send(RealtimeEvent {
+                        status: RealtimeStatus::Disconnected,
+                        message: Some("Closed socket".to_string()),
+                        error: None,
+                    });
+                }
+            }
+        }
+    });
 }
 
 fn seed_channels() -> Vec<(i64, &'static str, ChannelKind)> {
@@ -286,6 +423,7 @@ struct App {
     composer_focus_requested: bool,
     composer_meta: HashMap<i64, ComposerMeta>,
     typing_state: HashMap<i64, Instant>,
+    realtime: RealtimeClient,
 }
 
 impl App {
@@ -414,6 +552,7 @@ impl App {
             composer_focus_requested: true,
             composer_meta,
             typing_state: HashMap::new(),
+            realtime: RealtimeClient::new("ws://127.0.0.1:9001".to_string()),
         }
     }
 
@@ -427,6 +566,7 @@ impl App {
     }
 
     fn render(&mut self) {
+        self.realtime.poll();
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
         let mut pending_send: Option<String> = None;
         let mut channel_switch: Option<i64> = None;
@@ -483,6 +623,43 @@ impl App {
                     "Session uptime: {:.1}s",
                     self.started_at.elapsed().as_secs_f32()
                 ));
+                ui.horizontal(|row| {
+                    row.label(format!("Realtime: {}", self.realtime.status.label()));
+                    row.label(
+                        egui::RichText::new(&self.realtime.target_url)
+                            .small()
+                            .color(egui::Color32::from_rgb(120, 130, 150)),
+                    );
+                    match self.realtime.status {
+                        RealtimeStatus::Disconnected => {
+                            if row.button("Connect").clicked() {
+                                self.realtime.connect();
+                            }
+                        }
+                        RealtimeStatus::Connecting => {
+                            row.add_enabled(false, egui::Button::new("Connecting..."));
+                        }
+                        RealtimeStatus::Connected => {
+                            if row.button("Disconnect").clicked() {
+                                self.realtime.disconnect();
+                            }
+                        }
+                    }
+                    if let Some(message) = &self.realtime.last_message {
+                        row.label(
+                            egui::RichText::new(message)
+                                .small()
+                                .color(egui::Color32::from_rgb(140, 150, 170)),
+                        );
+                    }
+                    if let Some(error) = &self.realtime.last_error {
+                        row.label(
+                            egui::RichText::new(error)
+                                .small()
+                                .color(egui::Color32::from_rgb(220, 120, 120)),
+                        );
+                    }
+                });
                 ui.separator();
                 for message in &self.messages {
                     ui.horizontal(|row| {

@@ -16,6 +16,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added channel/DM scaffolding with a sidebar, channel table, and per-channel message filtering (`src/main.rs`).
 - Added per-channel composer metadata with placeholder text and a typing indicator stub (`src/main.rs`).
 - Added per-channel typing indicator state updates keyed to recent local input (`src/main.rs`).
+- Added WebSocket client scaffolding with a background worker, connection status UI, and connect/disconnect controls (`Cargo.toml`, `src/main.rs`).
 
 ## Core Requirements
 

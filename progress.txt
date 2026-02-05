@@ -67,3 +67,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Add basic per-channel typing indicator state updates.
+
+## Iteration 14 - February 5, 2026
+
+**Built:** Added WebSocket client scaffolding with a background worker plus connect/disconnect controls and status UI.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Hook WebSocket events into message send/receive flows.
