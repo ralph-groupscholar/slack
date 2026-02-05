@@ -17,6 +17,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added per-channel composer metadata with placeholder text and a typing indicator stub (`src/main.rs`).
 - Added per-channel typing indicator state updates keyed to recent local input (`src/main.rs`).
 - Added WebSocket client scaffolding with a background worker, connection status UI, and connect/disconnect controls (`Cargo.toml`, `src/main.rs`).
+- Hooked WebSocket send/receive into message flows with inbound persistence and UI updates (`src/main.rs`).
+- Added a JSON-based realtime message protocol with legacy fallback parsing for WebSocket sync (`Cargo.toml`, `src/main.rs`).
 
 ## Core Requirements
 
