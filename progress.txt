@@ -88,3 +88,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
 **Next:** Define the server-side sync contract and add a small local mock server for integration testing.
+
+## Iteration 17 - February 5, 2026
+
+**Built:** Added a local mock WebSocket server binary that echoes/broadcasts messages for integration testing.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/bin/mock_server.rs, PRD.md, progress.txt
+**Next:** Define a clearer server-side sync contract (auth, ack, presence) and wire it into the mock server.
+
+## Iteration 18 - February 5, 2026
+
+**Built:** Defined realtime auth/ack/presence payloads, added client auth handshake, and taught the mock server to issue acks + presence updates.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, src/bin/mock_server.rs, PRD.md, progress.txt
+**Next:** Add real presence tracking UI and persist presence state for channels/DMs.
