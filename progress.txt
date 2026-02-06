@@ -263,3 +263,10 @@
 **Performance:** Startup: not measured, Memory: max RSS 97.7MB
 **Files changed:** BENCHMARKS.md, PRD.md, progress.txt
 **Next:** Re-run startup benchmarks to continue pushing cold start below 200ms.
+
+## Iteration 42 - February 6, 2026
+
+**Built:** Re-ran startup benchmarks after recent memory optimizations and updated benchmark results.
+**Performance:** Startup p50 248.62ms, p95 379.62ms; Memory: not measured
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Identify the next cold-start bottleneck to reach <200ms (profile startup path, trim heavy init).
