@@ -26,6 +26,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added file attachment ingestion from local paths, persisted attachment metadata, and rendered attachment previews (`src/main.rs`).
 - Added realtime attachment payloads plus inbound attachment persistence for synced messages (`src/main.rs`, `src/bin/mock_server.rs`).
 - Added cached image thumbnail previews for image attachments with fallback error messaging (`Cargo.toml`, `src/main.rs`).
+- Added inline attachment actions to open or reveal files from the message list (`src/main.rs`).
 
 ## Core Requirements
 

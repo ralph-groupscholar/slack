@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    path::Path,
+    process::Command,
     sync::mpsc,
     sync::Arc,
     thread,
@@ -876,6 +878,7 @@ struct App {
     attachment_path_drafts: HashMap<i64, String>,
     pending_attachments: HashMap<i64, Vec<PendingAttachment>>,
     attachment_error: Option<String>,
+    attachment_action_error: Option<String>,
     attachment_thumbnails: HashMap<String, egui::TextureHandle>,
     attachment_thumbnail_errors: HashMap<String, String>,
 }
@@ -1043,6 +1046,7 @@ impl App {
             attachment_path_drafts: HashMap::new(),
             pending_attachments: HashMap::new(),
             attachment_error: None,
+            attachment_action_error: None,
             attachment_thumbnails: HashMap::new(),
             attachment_thumbnail_errors: HashMap::new(),
         }
@@ -1355,10 +1359,29 @@ impl App {
                                     .small()
                                     .color(egui::Color32::from_rgb(120, 130, 150)),
                                 );
+                                if row.button("Open").clicked() {
+                                    match open_attachment(&attachment.file_path) {
+                                        Ok(()) => self.attachment_action_error = None,
+                                        Err(err) => self.attachment_action_error = Some(err),
+                                    }
+                                }
+                                if row.button("Reveal").clicked() {
+                                    match reveal_attachment(&attachment.file_path) {
+                                        Ok(()) => self.attachment_action_error = None,
+                                        Err(err) => self.attachment_action_error = Some(err),
+                                    }
+                                }
                             });
                         }
                     }
                     ui.add_space(2.0);
+                }
+                if let Some(error) = &self.attachment_action_error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                    );
                 }
                 ui.separator();
                 let (composer_placeholder, typing_stub) = self
@@ -2024,6 +2047,55 @@ fn load_attachment_thumbnail(
         color_image,
         egui::TextureOptions::LINEAR,
     ))
+}
+
+fn open_attachment(path: &str) -> Result<(), String> {
+    open_attachment_with_args(path, &[])
+}
+
+fn reveal_attachment(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        open_attachment_with_args(path, &["-R"])
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let parent = Path::new(path)
+            .parent()
+            .ok_or_else(|| "Attachment path has no parent directory.".to_string())?;
+        open_attachment_with_args(parent.to_str().unwrap_or_default(), &[])
+    }
+}
+
+fn open_attachment_with_args(path: &str, extra_args: &[&str]) -> Result<(), String> {
+    let path_ref = Path::new(path);
+    if !path_ref.exists() {
+        return Err("Attachment path does not exist.".to_string());
+    }
+    let mut command = if cfg!(target_os = "macos") {
+        let mut cmd = Command::new("open");
+        cmd.args(extra_args);
+        cmd
+    } else if cfg!(target_os = "windows") {
+        Command::new("explorer")
+    } else {
+        Command::new("xdg-open")
+    };
+    if cfg!(target_os = "windows") && extra_args.iter().any(|arg| *arg == "-R") {
+        command.arg(format!("/select,{}", path_ref.display()));
+    } else {
+        command.arg(path_ref);
+    }
+    command
+        .status()
+        .map_err(|err| format!("Failed to launch attachment: {err}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err("Attachment launcher exited with failure.".to_string())
+            }
+        })
 }
 
 fn ingest_attachment(path: &str) -> Result<PendingAttachment, String> {
