@@ -111,8 +111,8 @@ struct RealtimeClient {
     last_message: Option<String>,
     last_error: Option<String>,
     target_url: String,
-    cmd_tx: mpsc::Sender<RealtimeCommand>,
-    evt_rx: mpsc::Receiver<RealtimeEvent>,
+    cmd_tx: Option<mpsc::Sender<RealtimeCommand>>,
+    evt_rx: Option<mpsc::Receiver<RealtimeEvent>>,
     incoming: Vec<IncomingMessage>,
     incoming_presence: Vec<PresenceUpdate>,
 }
@@ -256,49 +256,69 @@ fn decode_realtime_inbound(text: &str) -> Result<RealtimeInbound, String> {
 
 impl RealtimeClient {
     fn new(target_url: String) -> Self {
-        let (cmd_tx, cmd_rx) = mpsc::channel();
-        let (evt_tx, evt_rx) = mpsc::channel();
-        spawn_realtime_worker(cmd_rx, evt_tx, target_url.clone());
         Self {
             status: RealtimeStatus::Disconnected,
             last_message: None,
             last_error: None,
             target_url,
-            cmd_tx,
-            evt_rx,
+            cmd_tx: None,
+            evt_rx: None,
             incoming: Vec::new(),
             incoming_presence: Vec::new(),
         }
     }
 
-    fn connect(&self) {
-        let _ = self.cmd_tx.send(RealtimeCommand::Connect);
+    fn ensure_worker(&mut self) {
+        if self.cmd_tx.is_some() {
+            return;
+        }
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (evt_tx, evt_rx) = mpsc::channel();
+        spawn_realtime_worker(cmd_rx, evt_tx, self.target_url.clone());
+        self.cmd_tx = Some(cmd_tx);
+        self.evt_rx = Some(evt_rx);
     }
 
-    fn disconnect(&self) {
-        let _ = self.cmd_tx.send(RealtimeCommand::Disconnect);
+    fn connect(&mut self) {
+        self.ensure_worker();
+        if let Some(cmd_tx) = self.cmd_tx.as_ref() {
+            let _ = cmd_tx.send(RealtimeCommand::Connect);
+        }
+    }
+
+    fn disconnect(&mut self) {
+        if let Some(cmd_tx) = self.cmd_tx.as_ref() {
+            let _ = cmd_tx.send(RealtimeCommand::Disconnect);
+        } else {
+            self.status = RealtimeStatus::Disconnected;
+            self.last_message = Some("Already disconnected".to_string());
+        }
     }
 
     fn send_message(&self, message: &Message, attachments: Vec<RealtimeAttachment>) {
-        let _ = self.cmd_tx.send(RealtimeCommand::SendMessage {
-            author: message.author.clone(),
-            body: message.body.clone(),
-            sent_at: message.sent_at.clone(),
-            channel_id: message.channel_id,
-            attachments,
-        });
+        if let Some(cmd_tx) = self.cmd_tx.as_ref() {
+            let _ = cmd_tx.send(RealtimeCommand::SendMessage {
+                author: message.author.clone(),
+                body: message.body.clone(),
+                sent_at: message.sent_at.clone(),
+                channel_id: message.channel_id,
+                attachments,
+            });
+        }
     }
 
     fn poll(&mut self) {
-        while let Ok(event) = self.evt_rx.try_recv() {
-            self.status = event.status;
-            self.last_message = event.message;
-            self.last_error = event.error;
-            if let Some(message) = event.inbound {
-                self.incoming.push(message);
-            }
-            if let Some(presence) = event.presence {
-                self.incoming_presence.push(presence);
+        if let Some(evt_rx) = self.evt_rx.as_ref() {
+            while let Ok(event) = evt_rx.try_recv() {
+                self.status = event.status;
+                self.last_message = event.message;
+                self.last_error = event.error;
+                if let Some(message) = event.inbound {
+                    self.incoming.push(message);
+                }
+                if let Some(presence) = event.presence {
+                    self.incoming_presence.push(presence);
+                }
             }
         }
     }
@@ -1180,6 +1200,8 @@ impl App {
         let mut channel_switch: Option<i64> = None;
         let mut search_request: Option<SearchRequest> = None;
         let mut search_clear = false;
+        let mut realtime_connect = false;
+        let mut realtime_disconnect = false;
         let egui_ctx = self.egui_ctx.clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::SidePanel::left("channel_list")
@@ -1270,7 +1292,7 @@ impl App {
                     match self.realtime.status {
                         RealtimeStatus::Disconnected => {
                             if row.button("Connect").clicked() {
-                                self.realtime.connect();
+                                realtime_connect = true;
                             }
                         }
                         RealtimeStatus::Connecting => {
@@ -1278,7 +1300,7 @@ impl App {
                         }
                         RealtimeStatus::Connected => {
                             if row.button("Disconnect").clicked() {
-                                self.realtime.disconnect();
+                                realtime_disconnect = true;
                             }
                         }
                     }
@@ -1628,6 +1650,12 @@ impl App {
                 });
             });
         });
+        if realtime_connect {
+            self.realtime.connect();
+        }
+        if realtime_disconnect {
+            self.realtime.disconnect();
+        }
 
         self.egui_state
             .handle_platform_output(self.window.as_ref(), full_output.platform_output);
