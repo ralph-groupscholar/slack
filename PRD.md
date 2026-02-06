@@ -24,6 +24,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added realtime presence tracking state with channel/DM presence UI summaries and member counts (`src/main.rs`).
 - Added a SQLite-backed message search bar with channel-scoped filtering and search results rendering (`src/main.rs`).
 - Added file attachment ingestion from local paths, persisted attachment metadata, and rendered attachment previews (`src/main.rs`).
+- Added realtime attachment payloads plus inbound attachment persistence for synced messages (`src/main.rs`, `src/bin/mock_server.rs`).
+- Added cached image thumbnail previews for image attachments with fallback error messaging (`Cargo.toml`, `src/main.rs`).
 
 ## Core Requirements
 

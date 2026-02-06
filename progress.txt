@@ -123,3 +123,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Add richer attachment previews (image thumbnails) and inbound attachment handling.
+
+## Iteration 22 - February 6, 2026
+
+**Built:** Added realtime attachment payloads plus inbound attachment persistence and UI availability for synced messages.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, src/bin/mock_server.rs, PRD.md, progress.txt
+**Next:** Add richer attachment previews (image thumbnails) and inbound attachment rendering polish.
+
+## Iteration 23 - February 6, 2026
+
+**Built:** Added cached image thumbnail previews for image attachments with fallback messaging on decode/load errors.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** Cargo.toml, src/main.rs, PRD.md, progress.txt
+**Next:** Add inline attachment actions (open/reveal) and consider async loading for large images.
