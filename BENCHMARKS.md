@@ -13,8 +13,8 @@ perf_tests/startup_bench.py 10
 ```
 
 Results:
-- p50: 276.08 ms
-- p95: 928.01 ms
+- p50: 226.22 ms
+- p95: 268.57 ms
 
 ### Memory (max RSS)
 
@@ -25,5 +25,5 @@ perf_tests/memory_bench.sh
 ```
 
 Results:
-- max_rss_mb: 101.2 MB
-- max_rss_bytes: 106119168
+- max_rss_mb: 102.0 MB
+- max_rss_bytes: 106905600

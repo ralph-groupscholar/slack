@@ -186,3 +186,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run memory benchmarks to confirm <100MB and continue trimming cold startup.
+
+## Iteration 31 - February 6, 2026
+
+**Built:** Re-ran the memory benchmark after lowering the initial message fetch limit and refreshed benchmark results.
+**Performance:** Startup: not measured, Memory: max RSS 102.0MB
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Reduce baseline memory usage further to get under 100MB, then re-run benchmarks.
