@@ -51,6 +51,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Limited wgpu backend initialization to Metal to reduce adapter enumeration overhead at cold start (`src/main.rs`).
 - Re-ran startup benchmarks after the Metal-only backend change (startup p50 279.92ms, p95 849.41ms) and refreshed `BENCHMARKS.md`.
 - Deferred SQLite schema initialization to the background hydrate path and gated search/composer actions until messages load to keep cold-start DB work off the main thread (`src/main.rs`).
+- Deferred opening the on-disk SQLite connection until the background hydrate completes to trim cold-start IO (`src/main.rs`).
+- Deferred the background hydrate thread until after the first frame renders to reduce cold-start work (`src/main.rs`).
 
 ## Core Requirements
 
