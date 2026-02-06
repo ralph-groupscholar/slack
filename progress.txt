@@ -291,3 +291,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run startup benchmarks to see if cold start improves and trim remaining startup bottlenecks.
+
+## Iteration 46 - February 6, 2026
+
+**Built:** Restricted wgpu initialization to Metal to cut adapter enumeration on cold start.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to confirm impact on cold start.

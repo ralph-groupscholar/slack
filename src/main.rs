@@ -948,7 +948,10 @@ impl App {
                 .expect("window"),
         );
 
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
         let surface = instance
             .create_surface(window.clone())
             .expect("create surface");
