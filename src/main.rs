@@ -855,6 +855,11 @@ struct ThumbnailResult {
     error: Option<String>,
 }
 
+struct DeferredLoadResult {
+    attachments: HashMap<i64, Vec<Attachment>>,
+    channel_members: HashMap<i64, HashSet<String>>,
+}
+
 struct App {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -895,6 +900,7 @@ struct App {
     thumbnail_sender: mpsc::Sender<ThumbnailResult>,
     thumbnail_receiver: mpsc::Receiver<ThumbnailResult>,
     thumbnail_in_flight: HashSet<String>,
+    deferred_load_receiver: Option<mpsc::Receiver<DeferredLoadResult>>,
 }
 
 impl App {
@@ -1004,23 +1010,36 @@ impl App {
                     .collect()
             }
         };
-        let message_attachments = match load_attachments_for_message_ids(
-            &db,
-            &messages.iter().map(|message| message.id).collect::<Vec<_>>(),
-        ) {
-            Ok(attachments) => attachments,
-            Err(err) => {
-                eprintln!("db attachments load error: {err}");
-                HashMap::new()
-            }
-        };
-        let channel_members = match load_channel_members(&db, &channels) {
-            Ok(members) => members,
-            Err(err) => {
-                eprintln!("db members load error: {err}");
-                HashMap::new()
-            }
-        };
+        let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+        let (deferred_load_sender, deferred_load_receiver) = mpsc::channel();
+        let channels_for_load = channels.clone();
+        std::thread::spawn(move || {
+            let db = match Connection::open("ralph.db") {
+                Ok(conn) => conn,
+                Err(err) => {
+                    eprintln!("db open error (deferred): {err}");
+                    return;
+                }
+            };
+            let attachments = match load_attachments_for_message_ids(&db, &message_ids) {
+                Ok(attachments) => attachments,
+                Err(err) => {
+                    eprintln!("db attachments load error (deferred): {err}");
+                    HashMap::new()
+                }
+            };
+            let channel_members = match load_channel_members(&db, &channels_for_load) {
+                Ok(members) => members,
+                Err(err) => {
+                    eprintln!("db members load error (deferred): {err}");
+                    HashMap::new()
+                }
+            };
+            let _ = deferred_load_sender.send(DeferredLoadResult {
+                attachments,
+                channel_members,
+            });
+        });
         let mut presence_state = HashMap::new();
         presence_state.insert(
             "you".to_string(),
@@ -1055,14 +1074,14 @@ impl App {
             composer_meta,
             typing_state: HashMap::new(),
             realtime: RealtimeClient::new("ws://127.0.0.1:9001".to_string()),
-            channel_members,
+            channel_members: HashMap::new(),
             presence_state,
             search_query: String::new(),
             search_last_query: String::new(),
             search_results: Vec::new(),
             search_channel_only: true,
             search_last_channel_only: true,
-            message_attachments,
+            message_attachments: HashMap::new(),
             attachment_path_drafts: HashMap::new(),
             pending_attachments: HashMap::new(),
             attachment_error: None,
@@ -1072,6 +1091,7 @@ impl App {
             thumbnail_sender,
             thumbnail_receiver,
             thumbnail_in_flight: HashSet::new(),
+            deferred_load_receiver: Some(deferred_load_receiver),
         }
     }
 
@@ -1108,6 +1128,7 @@ impl App {
             }
         }
         self.drain_thumbnail_results();
+        self.apply_deferred_loads();
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
         let mut pending_send: Option<String> = None;
         let mut pending_attachments_send = Vec::new();
@@ -1851,6 +1872,27 @@ impl App {
                 self.attachment_thumbnails
                     .insert(result.path, texture);
             }
+        }
+    }
+
+    fn apply_deferred_loads(&mut self) {
+        let result = match self.deferred_load_receiver.as_ref() {
+            Some(receiver) => receiver.try_recv().ok(),
+            None => None,
+        };
+        if let Some(result) = result {
+            for (message_id, attachments) in result.attachments {
+                self.message_attachments
+                    .entry(message_id)
+                    .or_insert(attachments);
+            }
+            for (channel_id, members) in result.channel_members {
+                self.channel_members
+                    .entry(channel_id)
+                    .or_default()
+                    .extend(members);
+            }
+            self.deferred_load_receiver = None;
         }
     }
 
