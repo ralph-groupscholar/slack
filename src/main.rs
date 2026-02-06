@@ -21,9 +21,14 @@ use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::{
     dpi::PhysicalSize,
     event::{Event, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy},
     window::{Window, WindowBuilder},
 };
+
+#[derive(Debug, Clone, Copy)]
+enum UserEvent {
+    Wake,
+}
 
 #[derive(Clone)]
 struct Message {
@@ -115,6 +120,7 @@ struct RealtimeClient {
     evt_rx: Option<mpsc::Receiver<RealtimeEvent>>,
     incoming: Vec<IncomingMessage>,
     incoming_presence: Vec<PresenceUpdate>,
+    event_proxy: EventLoopProxy<UserEvent>,
 }
 
 #[derive(Clone)]
@@ -255,7 +261,7 @@ fn decode_realtime_inbound(text: &str) -> Result<RealtimeInbound, String> {
 }
 
 impl RealtimeClient {
-    fn new(target_url: String) -> Self {
+    fn new(target_url: String, event_proxy: EventLoopProxy<UserEvent>) -> Self {
         Self {
             status: RealtimeStatus::Disconnected,
             last_message: None,
@@ -265,6 +271,7 @@ impl RealtimeClient {
             evt_rx: None,
             incoming: Vec::new(),
             incoming_presence: Vec::new(),
+            event_proxy,
         }
     }
 
@@ -274,7 +281,7 @@ impl RealtimeClient {
         }
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (evt_tx, evt_rx) = mpsc::channel();
-        spawn_realtime_worker(cmd_rx, evt_tx, self.target_url.clone());
+        spawn_realtime_worker(cmd_rx, evt_tx, self.target_url.clone(), self.event_proxy.clone());
         self.cmd_tx = Some(cmd_tx);
         self.evt_rx = Some(evt_rx);
     }
@@ -336,6 +343,7 @@ fn spawn_realtime_worker(
     cmd_rx: mpsc::Receiver<RealtimeCommand>,
     evt_tx: mpsc::Sender<RealtimeEvent>,
     target_url: String,
+    event_proxy: EventLoopProxy<UserEvent>,
 ) {
     thread::spawn(move || {
         let mut connected = false;
@@ -356,6 +364,7 @@ fn spawn_realtime_worker(
                             inbound: None,
                             presence: None,
                         });
+                        let _ = event_proxy.send_event(UserEvent::Wake);
                         match Url::parse(&target_url)
                             .map_err(|err| err.to_string())
                             .and_then(|url| {
@@ -388,6 +397,7 @@ fn spawn_realtime_worker(
                                                     inbound: None,
                                                     presence: None,
                                                 });
+                                                let _ = event_proxy.send_event(UserEvent::Wake);
                                                 continue;
                                             }
                                         }
@@ -399,6 +409,7 @@ fn spawn_realtime_worker(
                                                 inbound: None,
                                                 presence: None,
                                             });
+                                            let _ = event_proxy.send_event(UserEvent::Wake);
                                         }
                                     }
                                 }
@@ -409,6 +420,7 @@ fn spawn_realtime_worker(
                                     inbound: None,
                                     presence: None,
                                 });
+                                let _ = event_proxy.send_event(UserEvent::Wake);
                             }
                             Err(err) => {
                                 connected = false;
@@ -420,6 +432,7 @@ fn spawn_realtime_worker(
                                     inbound: None,
                                     presence: None,
                                 });
+                                let _ = event_proxy.send_event(UserEvent::Wake);
                             }
                         }
                     }
@@ -435,6 +448,7 @@ fn spawn_realtime_worker(
                             inbound: None,
                             presence: None,
                         });
+                        let _ = event_proxy.send_event(UserEvent::Wake);
                     }
                     RealtimeCommand::SendMessage {
                         author,
@@ -463,6 +477,7 @@ fn spawn_realtime_worker(
                                             inbound: None,
                                             presence: None,
                                         });
+                                        let _ = event_proxy.send_event(UserEvent::Wake);
                                     }
                                 }
                                 Err(err) => {
@@ -473,6 +488,7 @@ fn spawn_realtime_worker(
                                         inbound: None,
                                         presence: None,
                                     });
+                                    let _ = event_proxy.send_event(UserEvent::Wake);
                                 }
                             }
                         }
@@ -496,6 +512,7 @@ fn spawn_realtime_worker(
                                             inbound: Some(message),
                                             presence: None,
                                         });
+                                        let _ = event_proxy.send_event(UserEvent::Wake);
                                     }
                                     Ok(RealtimeInbound::Presence { user, status }) => {
                                         let _ = evt_tx.send(RealtimeEvent {
@@ -505,6 +522,7 @@ fn spawn_realtime_worker(
                                             inbound: None,
                                             presence: Some(PresenceUpdate { user, status }),
                                         });
+                                        let _ = event_proxy.send_event(UserEvent::Wake);
                                     }
                                     Ok(RealtimeInbound::Signal(signal)) => {
                                         let _ = evt_tx.send(RealtimeEvent {
@@ -514,6 +532,7 @@ fn spawn_realtime_worker(
                                             inbound: None,
                                             presence: None,
                                         });
+                                        let _ = event_proxy.send_event(UserEvent::Wake);
                                     }
                                     Err(err) => {
                                         let _ = evt_tx.send(RealtimeEvent {
@@ -523,6 +542,7 @@ fn spawn_realtime_worker(
                                             inbound: None,
                                             presence: None,
                                         });
+                                        let _ = event_proxy.send_event(UserEvent::Wake);
                                     }
                                 }
                             }
@@ -543,6 +563,7 @@ fn spawn_realtime_worker(
                                     inbound: None,
                                     presence: None,
                                 });
+                                let _ = event_proxy.send_event(UserEvent::Wake);
                             }
                         }
                     }
@@ -908,6 +929,8 @@ struct App {
     egui_ctx: egui::Context,
     egui_renderer: Renderer,
     boot_started: Instant,
+    next_repaint_at: Instant,
+    needs_repaint: bool,
     first_frame_logged: bool,
     exit_after_first_frame: bool,
     exit_requested: bool,
@@ -944,10 +967,16 @@ struct App {
     thumbnail_in_flight: HashSet<String>,
     deferred_load_receiver: Option<mpsc::Receiver<DeferredLoadResult>>,
     deferred_load_plan: Option<DeferredLoadPlan>,
+    event_proxy: EventLoopProxy<UserEvent>,
 }
 
 impl App {
-    fn new(event_loop: &EventLoop<()>, boot_started: Instant, exit_after_first_frame: bool) -> Self {
+    fn new(
+        event_loop: &EventLoop<UserEvent>,
+        event_proxy: EventLoopProxy<UserEvent>,
+        boot_started: Instant,
+        exit_after_first_frame: bool,
+    ) -> Self {
         let window = Arc::new(
             WindowBuilder::new()
                 .with_title("Ralph")
@@ -964,7 +993,7 @@ impl App {
             .create_surface(window.clone())
             .expect("create surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
@@ -1051,6 +1080,8 @@ impl App {
             egui_ctx,
             egui_renderer,
             boot_started,
+            next_repaint_at: Instant::now(),
+            needs_repaint: true,
             first_frame_logged: false,
             exit_after_first_frame,
             exit_requested: false,
@@ -1064,7 +1095,10 @@ impl App {
             composer_focus_requested: true,
             composer_meta,
             typing_state: HashMap::new(),
-            realtime: RealtimeClient::new("ws://127.0.0.1:9001".to_string()),
+            realtime: RealtimeClient::new(
+                "ws://127.0.0.1:9001".to_string(),
+                event_proxy.clone(),
+            ),
             channel_members: HashMap::new(),
             presence_state,
             search_query: String::new(),
@@ -1087,6 +1121,7 @@ impl App {
             thumbnail_in_flight: HashSet::new(),
             deferred_load_receiver: None,
             deferred_load_plan: Some(deferred_load_plan),
+            event_proxy,
         }
     }
 
@@ -1605,6 +1640,13 @@ impl App {
                 }
             });
         });
+        let repaint_delay = full_output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|output| output.repaint_delay)
+            .unwrap_or(Duration::from_millis(16));
+        self.next_repaint_at = Instant::now() + repaint_delay;
+        self.needs_repaint = repaint_delay.is_zero();
         if realtime_connect {
             self.realtime.connect();
         }
@@ -1919,6 +1961,7 @@ impl App {
         };
         let (deferred_load_sender, deferred_load_receiver) = mpsc::channel();
         self.deferred_load_receiver = Some(deferred_load_receiver);
+        let event_proxy = self.event_proxy.clone();
         thread::spawn(move || {
             let deferred_channel_id = plan.channel_id;
             let channels_for_load = plan.channels;
@@ -1938,6 +1981,7 @@ impl App {
                         channel_members: HashMap::new(),
                         db_ready: false,
                     });
+                    let _ = event_proxy.send_event(UserEvent::Wake);
                     return;
                 }
             };
@@ -1999,6 +2043,7 @@ impl App {
                 channel_members,
                 db_ready,
             });
+            let _ = event_proxy.send_event(UserEvent::Wake);
         });
     }
 
@@ -2130,6 +2175,7 @@ impl App {
             return;
         }
         let sender = self.thumbnail_sender.clone();
+        let event_proxy = self.event_proxy.clone();
         let path = path.to_string();
         thread::spawn(move || {
             let result = match load_attachment_thumbnail_image(&path) {
@@ -2145,6 +2191,7 @@ impl App {
                 },
             };
             let _ = sender.send(result);
+            let _ = event_proxy.send_event(UserEvent::Wake);
         });
     }
 
@@ -2632,10 +2679,17 @@ fn main() {
     println!("ralph: booting");
     let exit_after_first_frame = env::var("RALPH_STARTUP_BENCH").is_ok();
 
-    let event_loop = EventLoop::new().expect("event loop");
-    let mut app = App::new(&event_loop, boot_started, exit_after_first_frame);
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
+        .build()
+        .expect("event loop");
+    let event_proxy = event_loop.create_proxy();
+    let mut app = App::new(&event_loop, event_proxy, boot_started, exit_after_first_frame);
 
     let _ = event_loop.run(move |event, elwt| match event {
+        Event::UserEvent(UserEvent::Wake) => {
+            app.needs_repaint = true;
+            app.window.request_redraw();
+        }
         Event::WindowEvent { event, window_id } if window_id == app.window.id() => {
             match event {
                 WindowEvent::RedrawRequested => app.render(),
@@ -2650,10 +2704,13 @@ fn main() {
                     app.resize(size);
                 }
                 _ => {
-                    let _ = app
+                    let response = app
                         .egui_state
-                        .on_window_event(app.window.as_ref(), &event)
-                        .consumed;
+                        .on_window_event(app.window.as_ref(), &event);
+                    if response.repaint {
+                        app.needs_repaint = true;
+                        app.window.request_redraw();
+                    }
                 }
             }
         }
@@ -2661,7 +2718,14 @@ fn main() {
             if app.exit_requested {
                 elwt.exit();
             } else {
-                app.window.request_redraw();
+                let now = Instant::now();
+                if app.needs_repaint || now >= app.next_repaint_at {
+                    app.needs_repaint = false;
+                    app.window.request_redraw();
+                    elwt.set_control_flow(ControlFlow::Poll);
+                } else {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(app.next_repaint_at));
+                }
             }
         }
         _ => {}

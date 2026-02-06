@@ -57,6 +57,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added inline rich text rendering for message bodies with bold/italic/code formatting (`src/main.rs`).
 - Switched wgpu adapter power preference to LowPower to favor faster startup on macOS (`src/main.rs`).
 - Re-ran startup benchmarks after the LowPower adapter change (startup p50 209.63ms, p95 329.22ms) and refreshed `BENCHMARKS.md`.
+- Switched the UI render loop to event-driven repaint scheduling with wake signals from background workers to reduce idle CPU (`src/main.rs`).
 
 ## Core Requirements
 

@@ -354,3 +354,10 @@
 **Performance:** Startup p50 209.63ms, p95 329.22ms; Memory: not measured
 **Files changed:** BENCHMARKS.md, PRD.md, progress.txt
 **Next:** Identify the next cold-start bottleneck to reach <200ms.
+
+## Iteration 55 - February 6, 2026
+
+**Built:** Switched to event-driven repaint scheduling with background-thread wake events to reduce idle CPU while keeping realtime/deferred updates responsive.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Measure idle CPU and re-run startup benchmarks to confirm <200ms cold start.
