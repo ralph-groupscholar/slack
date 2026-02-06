@@ -27,3 +27,14 @@ perf_tests/memory_bench.sh
 Results:
 - max_rss_mb: 97.7 MB
 - max_rss_bytes: 102449152
+
+### Idle CPU
+
+Command:
+
+```bash
+perf_tests/idle_cpu_bench.sh
+```
+
+Results:
+- avg_cpu_percent: 3.53
