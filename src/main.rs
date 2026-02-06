@@ -602,7 +602,7 @@ fn seed_messages() -> Vec<Message> {
     ]
 }
 
-const MESSAGE_FETCH_LIMIT: i64 = 30;
+const MESSAGE_FETCH_LIMIT: i64 = 20;
 const THUMBNAIL_CACHE_LIMIT: usize = 24;
 const THUMBNAIL_ERROR_LIMIT: usize = 24;
 
@@ -866,6 +866,7 @@ struct ThumbnailResult {
 
 struct DeferredLoadResult {
     channel_id: i64,
+    channels: Vec<Channel>,
     messages: Vec<Message>,
     attachments: HashMap<i64, Vec<Attachment>>,
     channel_members: HashMap<i64, HashSet<String>>,
@@ -982,7 +983,7 @@ impl App {
         );
         let egui_renderer = Renderer::new(&device, surface_format, None, 1);
 
-        let mut db = match Connection::open("ralph.db") {
+        let db = match Connection::open("ralph.db") {
             Ok(conn) => conn,
             Err(err) => {
                 eprintln!("db open error: {err}");
@@ -992,26 +993,14 @@ impl App {
         if let Err(err) = ensure_schema(&db) {
             eprintln!("db schema error: {err}");
         }
-        if let Err(err) = seed_channels_if_empty(&mut db) {
-            eprintln!("db seed channels error: {err}");
-        }
-        if let Err(err) = seed_messages_if_empty(&mut db) {
-            eprintln!("db seed error: {err}");
-        }
-        let channels = match load_channels(&db) {
-            Ok(channels) => channels,
-            Err(err) => {
-                eprintln!("db channels load error: {err}");
-                seed_channels()
-                    .into_iter()
-                    .map(|(id, name, kind)| Channel {
-                        id,
-                        name: name.to_string(),
-                        kind,
-                    })
-                    .collect()
-            }
-        };
+        let channels: Vec<Channel> = seed_channels()
+            .into_iter()
+            .map(|(id, name, kind)| Channel {
+                id,
+                name: name.to_string(),
+                kind,
+            })
+            .collect();
         let selected_channel_id = channels.first().map(|channel| channel.id).unwrap_or(1);
         let composer_meta = build_composer_meta(&channels);
         let messages = Vec::new();
@@ -1019,7 +1008,7 @@ impl App {
         let channels_for_load = channels.clone();
         let (deferred_load_sender, deferred_load_receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let db = match Connection::open("ralph.db") {
+            let mut db = match Connection::open("ralph.db") {
                 Ok(conn) => conn,
                 Err(err) => {
                     eprintln!("db open error (deferred): {err}");
@@ -1029,6 +1018,7 @@ impl App {
                         .collect();
                     let _ = deferred_load_sender.send(DeferredLoadResult {
                         channel_id: deferred_channel_id,
+                        channels: channels_for_load.clone(),
                         messages,
                         attachments: HashMap::new(),
                         channel_members: HashMap::new(),
@@ -1036,13 +1026,36 @@ impl App {
                     return;
                 }
             };
-            let messages = match load_messages(&db, deferred_channel_id) {
+            if let Err(err) = ensure_schema(&db) {
+                eprintln!("db schema error (deferred): {err}");
+            }
+            if let Err(err) = seed_channels_if_empty(&mut db) {
+                eprintln!("db seed channels error (deferred): {err}");
+            }
+            if let Err(err) = seed_messages_if_empty(&mut db) {
+                eprintln!("db seed error (deferred): {err}");
+            }
+            let channels = match load_channels(&db) {
+                Ok(channels) if !channels.is_empty() => channels,
+                Ok(_) => channels_for_load.clone(),
+                Err(err) => {
+                    eprintln!("db channels load error (deferred): {err}");
+                    channels_for_load.clone()
+                }
+            };
+            let load_channel_id = channels
+                .iter()
+                .find(|channel| channel.id == deferred_channel_id)
+                .map(|channel| channel.id)
+                .or_else(|| channels.first().map(|channel| channel.id))
+                .unwrap_or(deferred_channel_id);
+            let messages = match load_messages(&db, load_channel_id) {
                 Ok(messages) => messages,
                 Err(err) => {
                     eprintln!("db load error (deferred): {err}");
                     seed_messages()
                         .into_iter()
-                        .filter(|message| message.channel_id == deferred_channel_id)
+                        .filter(|message| message.channel_id == load_channel_id)
                         .collect()
                 }
             };
@@ -1054,7 +1067,7 @@ impl App {
                     HashMap::new()
                 }
             };
-            let channel_members = match load_channel_members(&db, &channels_for_load) {
+            let channel_members = match load_channel_members(&db, &channels) {
                 Ok(members) => members,
                 Err(err) => {
                     eprintln!("db members load error (deferred): {err}");
@@ -1062,7 +1075,8 @@ impl App {
                 }
             };
             let _ = deferred_load_sender.send(DeferredLoadResult {
-                channel_id: deferred_channel_id,
+                channel_id: load_channel_id,
+                channels,
                 messages,
                 attachments,
                 channel_members,
@@ -1952,10 +1966,44 @@ impl App {
             None => None,
         };
         if let Some(result) = result {
+            let selected_before = self.selected_channel_id;
+            if !result.channels.is_empty() {
+                self.channels = result.channels;
+                self.composer_meta = build_composer_meta(&self.channels);
+                if !self
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == self.selected_channel_id)
+                {
+                    if let Some(channel) = self.channels.first() {
+                        self.selected_channel_id = channel.id;
+                        self.composer_focus_requested = true;
+                    }
+                }
+            }
             if result.channel_id == self.selected_channel_id {
                 self.messages = result.messages;
                 self.message_attachments = result.attachments;
                 self.messages_loaded = true;
+            } else if self.selected_channel_id != selected_before {
+                self.messages = match load_messages(&self.db, self.selected_channel_id) {
+                    Ok(messages) => messages,
+                    Err(err) => {
+                        eprintln!("db load error: {err}");
+                        Vec::new()
+                    }
+                };
+                self.messages_loaded = true;
+                self.message_attachments = match load_attachments_for_message_ids(
+                    &self.db,
+                    &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+                ) {
+                    Ok(attachments) => attachments,
+                    Err(err) => {
+                        eprintln!("db attachments load error: {err}");
+                        HashMap::new()
+                    }
+                };
             }
             for (channel_id, members) in result.channel_members {
                 self.channel_members
@@ -2224,7 +2272,7 @@ fn load_attachment_thumbnail_image(path: &str) -> Result<egui::ColorImage, Strin
         .with_guessed_format()
         .map_err(|err| format!("format error: {err}"))?;
     let mut image = reader.decode().map_err(|err| format!("decode error: {err}"))?;
-    let max_dimension = 320u32;
+    let max_dimension = 240u32;
     let (width, height) = image.dimensions();
     let max_axis = width.max(height);
     if max_axis > max_dimension {

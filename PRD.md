@@ -45,6 +45,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Reduced attachment thumbnail max dimension to lower per-image memory usage (`src/main.rs`).
 - Re-ran the memory benchmark after the thumbnail dimension change (max RSS 97.7MB; 102449152 bytes) and refreshed `BENCHMARKS.md`.
 - Re-ran startup benchmarks after the latest memory work (startup p50 248.62ms, p95 379.62ms) and refreshed `BENCHMARKS.md`.
+- Deferred channel/message DB seeding and channel loading to the background hydrate path, updating channel metadata after deferred loads to reduce cold-start work (`src/main.rs`).
 
 ## Core Requirements
 
