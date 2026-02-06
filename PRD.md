@@ -27,6 +27,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added realtime attachment payloads plus inbound attachment persistence for synced messages (`src/main.rs`, `src/bin/mock_server.rs`).
 - Added cached image thumbnail previews for image attachments with fallback error messaging (`Cargo.toml`, `src/main.rs`).
 - Added inline attachment actions to open or reveal files from the message list (`src/main.rs`).
+- Added async image thumbnail loading to keep the UI responsive when previews are large (`src/main.rs`).
+- Added perf test scripts for startup/memory baselines and recorded benchmark results (startup p50 276.08ms, p95 928.01ms; max RSS 101.2MB) in `perf_tests/` and `BENCHMARKS.md`.
 
 ## Core Requirements
 

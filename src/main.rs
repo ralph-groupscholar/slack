@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    env,
     fs,
     path::Path,
     process::Command,
@@ -848,6 +849,12 @@ struct PendingAttachment {
     kind: String,
 }
 
+struct ThumbnailResult {
+    path: String,
+    image: Option<egui::ColorImage>,
+    error: Option<String>,
+}
+
 struct App {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -857,6 +864,10 @@ struct App {
     egui_state: EguiWinitState,
     egui_ctx: egui::Context,
     egui_renderer: Renderer,
+    boot_started: Instant,
+    first_frame_logged: bool,
+    exit_after_first_frame: bool,
+    exit_requested: bool,
     started_at: Instant,
     db: Connection,
     channels: Vec<Channel>,
@@ -881,10 +892,13 @@ struct App {
     attachment_action_error: Option<String>,
     attachment_thumbnails: HashMap<String, egui::TextureHandle>,
     attachment_thumbnail_errors: HashMap<String, String>,
+    thumbnail_sender: mpsc::Sender<ThumbnailResult>,
+    thumbnail_receiver: mpsc::Receiver<ThumbnailResult>,
+    thumbnail_in_flight: HashSet<String>,
 }
 
 impl App {
-    fn new(event_loop: &EventLoop<()>) -> Self {
+    fn new(event_loop: &EventLoop<()>, boot_started: Instant, exit_after_first_frame: bool) -> Self {
         let window = Arc::new(
             WindowBuilder::new()
                 .with_title("Ralph")
@@ -1016,6 +1030,8 @@ impl App {
             },
         );
 
+        let (thumbnail_sender, thumbnail_receiver) = mpsc::channel();
+
         Self {
             window,
             surface,
@@ -1025,6 +1041,10 @@ impl App {
             egui_state,
             egui_ctx,
             egui_renderer,
+            boot_started,
+            first_frame_logged: false,
+            exit_after_first_frame,
+            exit_requested: false,
             started_at: Instant::now(),
             db,
             channels,
@@ -1049,6 +1069,9 @@ impl App {
             attachment_action_error: None,
             attachment_thumbnails: HashMap::new(),
             attachment_thumbnail_errors: HashMap::new(),
+            thumbnail_sender,
+            thumbnail_receiver,
+            thumbnail_in_flight: HashSet::new(),
         }
     }
 
@@ -1062,6 +1085,14 @@ impl App {
     }
 
     fn render(&mut self) {
+        if !self.first_frame_logged {
+            self.first_frame_logged = true;
+            let elapsed_ms = self.boot_started.elapsed().as_secs_f64() * 1000.0;
+            println!("ralph: first_frame_ms={elapsed_ms:.2}");
+            if self.exit_after_first_frame {
+                self.exit_requested = true;
+            }
+        }
         self.realtime.poll();
         let incoming = self.realtime.take_incoming();
         let presence_updates = self.realtime.take_presence();
@@ -1076,6 +1107,7 @@ impl App {
                 );
             }
         }
+        self.drain_thumbnail_results();
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
         let mut pending_send: Option<String> = None;
         let mut pending_attachments_send = Vec::new();
@@ -1270,6 +1302,7 @@ impl App {
                             .color(egui::Color32::from_rgb(160, 170, 190)),
                     );
                 }
+                let mut thumbnail_requests: Vec<String> = Vec::new();
                 for message in messages {
                     ui.horizontal(|row| {
                         row.label(
@@ -1302,22 +1335,14 @@ impl App {
                                     .contains_key(&attachment.file_path)
                                 {
                                     None
+                                } else if self
+                                    .thumbnail_in_flight
+                                    .contains(&attachment.file_path)
+                                {
+                                    None
                                 } else {
-                                    match load_attachment_thumbnail(
-                                        &self.egui_ctx,
-                                        &attachment.file_path,
-                                    ) {
-                                        Ok(texture) => {
-                                            self.attachment_thumbnails
-                                                .insert(attachment.file_path.clone(), texture);
-                                            self.attachment_thumbnails.get(&attachment.file_path)
-                                        }
-                                        Err(err) => {
-                                            self.attachment_thumbnail_errors
-                                                .insert(attachment.file_path.clone(), err);
-                                            None
-                                        }
-                                    }
+                                    thumbnail_requests.push(attachment.file_path.clone());
+                                    None
                                 };
                                 if let Some(texture) = thumbnail {
                                     let sized =
@@ -1325,6 +1350,18 @@ impl App {
                                     ui.add(
                                         egui::Image::from_texture(sized)
                                             .max_size(egui::Vec2::new(220.0, 160.0)),
+                                    );
+                                } else if self
+                                    .thumbnail_in_flight
+                                    .contains(&attachment.file_path)
+                                    || thumbnail_requests
+                                        .iter()
+                                        .any(|path| path == &attachment.file_path)
+                                {
+                                    ui.label(
+                                        egui::RichText::new("Loading image preview...")
+                                            .small()
+                                            .color(egui::Color32::from_rgb(130, 140, 160)),
                                     );
                                 } else if let Some(err) =
                                     self.attachment_thumbnail_errors.get(&attachment.file_path)
@@ -1375,6 +1412,11 @@ impl App {
                         }
                     }
                     ui.add_space(2.0);
+                }
+                if !thumbnail_requests.is_empty() {
+                    for path in thumbnail_requests {
+                        self.queue_thumbnail_load(&path);
+                    }
                 }
                 if let Some(error) = &self.attachment_action_error {
                     ui.label(
@@ -1792,6 +1834,49 @@ impl App {
 }
 
 impl App {
+    fn drain_thumbnail_results(&mut self) {
+        while let Ok(result) = self.thumbnail_receiver.try_recv() {
+            self.thumbnail_in_flight.remove(&result.path);
+            if let Some(error) = result.error {
+                self.attachment_thumbnail_errors
+                    .insert(result.path, error);
+                continue;
+            }
+            if let Some(image) = result.image {
+                let texture = self.egui_ctx.load_texture(
+                    format!("attachment:{}", result.path),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.attachment_thumbnails
+                    .insert(result.path, texture);
+            }
+        }
+    }
+
+    fn queue_thumbnail_load(&mut self, path: &str) {
+        if !self.thumbnail_in_flight.insert(path.to_string()) {
+            return;
+        }
+        let sender = self.thumbnail_sender.clone();
+        let path = path.to_string();
+        thread::spawn(move || {
+            let result = match load_attachment_thumbnail_image(&path) {
+                Ok(image) => ThumbnailResult {
+                    path,
+                    image: Some(image),
+                    error: None,
+                },
+                Err(error) => ThumbnailResult {
+                    path,
+                    image: None,
+                    error: Some(error),
+                },
+            };
+            let _ = sender.send(result);
+        });
+    }
+
     fn channel_label(&self, channel_id: i64) -> String {
         self.channels
             .iter()
@@ -2020,10 +2105,7 @@ fn load_attachments_for_message_ids(
     Ok(map)
 }
 
-fn load_attachment_thumbnail(
-    ctx: &egui::Context,
-    path: &str,
-) -> Result<egui::TextureHandle, String> {
+fn load_attachment_thumbnail_image(path: &str) -> Result<egui::ColorImage, String> {
     let reader = ImageReader::open(path)
         .map_err(|err| format!("file open: {err}"))?
         .with_guessed_format()
@@ -2041,12 +2123,7 @@ fn load_attachment_thumbnail(
     let rgba = image.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-    Ok(ctx.load_texture(
-        format!("attachment:{path}"),
-        color_image,
-        egui::TextureOptions::LINEAR,
-    ))
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, &pixels))
 }
 
 fn open_attachment(path: &str) -> Result<(), String> {
@@ -2145,10 +2222,12 @@ fn format_bytes(size: i64) -> String {
 }
 
 fn main() {
+    let boot_started = Instant::now();
     println!("ralph: booting");
+    let exit_after_first_frame = env::var("RALPH_STARTUP_BENCH").is_ok();
 
     let event_loop = EventLoop::new().expect("event loop");
-    let mut app = App::new(&event_loop);
+    let mut app = App::new(&event_loop, boot_started, exit_after_first_frame);
 
     let _ = event_loop.run(move |event, elwt| match event {
         Event::WindowEvent { event, window_id } if window_id == app.window.id() => {
@@ -2173,7 +2252,11 @@ fn main() {
             }
         }
         Event::AboutToWait => {
-            app.window.request_redraw();
+            if app.exit_requested {
+                elwt.exit();
+            } else {
+                app.window.request_redraw();
+            }
         }
         _ => {}
     });
