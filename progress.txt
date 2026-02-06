@@ -242,3 +242,24 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run the memory benchmark to see if RSS drops below 100MB.
+
+## Iteration 39 - February 6, 2026
+
+**Built:** Reduced the initial message fetch limit again to trim baseline memory usage.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run the memory benchmark to see if RSS drops below 100MB.
+
+## Iteration 40 - February 6, 2026
+
+**Built:** Reduced attachment thumbnail max dimension to lower per-image memory usage.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run the memory benchmark to see if RSS drops below 100MB.
+
+## Iteration 41 - February 6, 2026
+
+**Built:** Re-ran the memory benchmark after the thumbnail dimension reduction and updated benchmark results.
+**Performance:** Startup: not measured, Memory: max RSS 97.7MB
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to continue pushing cold start below 200ms.
