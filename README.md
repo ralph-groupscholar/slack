@@ -1,4 +1,4 @@
-# Ralph
+# Ralph Slack
 
 A blazingly fast, native team communication app built in Rust. Think "Ghostty for terminals" but for team chat — instant startup, minimal resource usage, and snappy UI interactions.
 
@@ -17,12 +17,12 @@ A blazingly fast, native team communication app built in Rust. Think "Ghostty fo
 
 Benchmarked on a macOS dev machine (debug build):
 
-| Metric | Result |
-| --- | --- |
+| Metric             | Result    |
+| ------------------ | --------- |
 | Cold startup (p50) | 209.63 ms |
 | Cold startup (p95) | 329.22 ms |
-| Memory (max RSS) | 97.7 MB |
-| Idle CPU | 3.53% avg |
+| Memory (max RSS)   | 97.7 MB   |
+| Idle CPU           | 3.53% avg |
 
 Key optimizations: deferred SQLite and background hydration, Metal-only wgpu backend, event-driven repaint loop, capped thumbnail caches with FIFO eviction, and low-power GPU adapter selection.
 
@@ -68,15 +68,15 @@ perf_tests/
 
 ### Tech Stack
 
-| Layer | Choice |
-| --- | --- |
-| Language | Rust |
-| UI | egui (immediate mode) |
-| Rendering | wgpu (Metal backend) |
-| Windowing | winit |
-| Local storage | SQLite (rusqlite, bundled) |
-| Real-time | WebSocket (tungstenite) |
-| Serialization | serde + serde_json |
+| Layer          | Choice                             |
+| -------------- | ---------------------------------- |
+| Language       | Rust                               |
+| UI             | egui (immediate mode)              |
+| Rendering      | wgpu (Metal backend)               |
+| Windowing      | winit                              |
+| Local storage  | SQLite (rusqlite, bundled)         |
+| Real-time      | WebSocket (tungstenite)            |
+| Serialization  | serde + serde_json                 |
 | Image decoding | image crate (gif, jpeg, png, webp) |
 
 ### Design Principles
@@ -88,8 +88,8 @@ perf_tests/
 
 ## Configuration
 
-| Environment Variable | Description |
-| --- | --- |
+| Environment Variable  | Description                                                          |
+| --------------------- | -------------------------------------------------------------------- |
 | `RALPH_STARTUP_BENCH` | Set to `1` to exit after the first frame (used by benchmark scripts) |
 
 - The app uses a local SQLite file `ralph.db` in the repo root. If it cannot be opened, it falls back to an in-memory database.
