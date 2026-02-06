@@ -37,6 +37,10 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Reduced the initial message fetch limit further to trim baseline memory usage (`src/main.rs`).
 - Reduced the initial message fetch limit again to lower baseline memory usage (`src/main.rs`).
 - Added a capped attachment thumbnail cache with FIFO eviction to limit preview memory growth (`src/main.rs`).
+- Re-ran the memory benchmark after the thumbnail cache cap (max RSS 103.8MB) and refreshed `BENCHMARKS.md`.
+- Reduced the initial message fetch limit further to trim baseline memory usage (`src/main.rs`).
+- Re-ran the memory benchmark after the latest fetch-limit reduction (max RSS 103.8MB; 108855296 bytes) and refreshed `BENCHMARKS.md`.
+- Reduced attachment thumbnail cache + error cache limits to lower baseline memory usage (`src/main.rs`).
 
 ## Core Requirements
 

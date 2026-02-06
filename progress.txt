@@ -214,3 +214,31 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run memory benchmark to see if the thumbnail cache cap nudges RSS below 100MB.
+
+## Iteration 35 - February 6, 2026
+
+**Built:** Re-ran the memory benchmark after capping the attachment thumbnail cache and updated results.
+**Performance:** Startup: not measured, Memory: max RSS 103.8MB
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Continue reducing baseline memory usage to get under 100MB, then re-run memory benchmarks.
+
+## Iteration 36 - February 6, 2026
+
+**Built:** Reduced the initial message fetch limit further to trim baseline memory usage.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run the memory benchmark to confirm whether RSS drops below 100MB.
+
+## Iteration 37 - February 6, 2026
+
+**Built:** Re-ran the memory benchmark after the latest fetch-limit reduction and refreshed benchmark bytes.
+**Performance:** Startup: not measured, Memory: max RSS 103.8MB
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Continue reducing baseline memory usage to get under 100MB, then re-run memory benchmarks.
+
+## Iteration 38 - February 6, 2026
+
+**Built:** Reduced attachment thumbnail cache + error cache limits to lower baseline memory usage.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run the memory benchmark to see if RSS drops below 100MB.
