@@ -4,7 +4,7 @@
 
 Create a blazingly fast team communication app that prioritizes instant startup, minimal resource usage, and snappy UI interactions. Think "Ghostty for terminals" but for team chat.
 
-## Latest Update (February 5, 2026)
+## Latest Update (February 6, 2026)
 
 - Initialized Rust build system with minimal binary entrypoint (`Cargo.toml`, `src/main.rs`).
 - Added a minimal native window using winit to validate basic UI rendering (`Cargo.toml`, `src/main.rs`).
@@ -21,6 +21,7 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added a JSON-based realtime message protocol with legacy fallback parsing for WebSocket sync (`Cargo.toml`, `src/main.rs`).
 - Added a local mock WebSocket server binary that echoes/broadcasts messages for integration testing (`src/bin/mock_server.rs`).
 - Defined a realtime sync contract with auth/ack/presence payloads and wired mock server + client handling (`src/main.rs`, `src/bin/mock_server.rs`).
+- Added realtime presence tracking state with channel/DM presence UI summaries and member counts (`src/main.rs`).
 
 ## Core Requirements
 
