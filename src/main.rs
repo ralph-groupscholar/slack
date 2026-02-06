@@ -602,7 +602,7 @@ fn seed_messages() -> Vec<Message> {
     ]
 }
 
-const MESSAGE_FETCH_LIMIT: i64 = 200;
+const MESSAGE_FETCH_LIMIT: i64 = 120;
 
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
