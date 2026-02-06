@@ -17,6 +17,8 @@ enum RealtimePayload {
         sent_at: String,
         channel_id: i64,
         client_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<RealtimeAttachment>,
     },
     Auth {
         token: String,
@@ -30,6 +32,14 @@ enum RealtimePayload {
         user: String,
         status: String,
     },
+}
+
+#[derive(Serialize, Deserialize)]
+struct RealtimeAttachment {
+    file_path: String,
+    file_name: String,
+    file_size: i64,
+    kind: String,
 }
 
 fn format_timestamp_utc() -> String {
@@ -86,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sent_at: format_timestamp_utc(),
             channel_id: 1,
             client_id: None,
+            attachments: Vec::new(),
         };
         send_payload(&mut socket, &welcome);
 
