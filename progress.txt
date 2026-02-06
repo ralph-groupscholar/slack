@@ -298,3 +298,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Re-run startup benchmarks to confirm impact on cold start.
+
+## Iteration 47 - February 6, 2026
+
+**Built:** Re-ran startup benchmarks after the Metal-only backend change and updated benchmark results.
+**Performance:** Startup p50 279.92ms, p95 849.41ms; Memory: not measured
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Identify and trim the next cold-start bottleneck to reach <200ms.
+
+## Iteration 48 - February 6, 2026
+
+**Built:** Deferred SQLite schema initialization into the background hydrate and disabled search/composer interactions until messages load to reduce cold-start DB work.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to see if cold start improves and identify the next bottleneck.
