@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     sync::mpsc,
     sync::Arc,
     thread,
@@ -8,7 +9,7 @@ use std::{
 
 use egui_wgpu::{Renderer, ScreenDescriptor};
 use egui_winit::State as EguiWinitState;
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 use tungstenite::{connect, Message as WsMessage};
 use url::Url;
@@ -22,6 +23,7 @@ use winit::{
 
 #[derive(Clone)]
 struct Message {
+    id: i64,
     author: String,
     body: String,
     sent_at: String,
@@ -160,6 +162,7 @@ impl RealtimePayload {
                 channel_id,
                 client_id: _,
             } => Some(Message {
+                id: 0,
                 author,
                 body,
                 sent_at,
@@ -181,6 +184,7 @@ fn parse_legacy_message(text: &str) -> Option<Message> {
     let sent_at = parts.next()?;
     let body = parts.next().unwrap_or(text);
     Some(Message {
+        id: 0,
         author: author.to_string(),
         body: body.to_string(),
         sent_at: sent_at.to_string(),
@@ -388,6 +392,7 @@ fn spawn_realtime_worker(
                     } => {
                         if let Some(ws) = socket.as_mut() {
                             let message = Message {
+                                id: 0,
                                 author,
                                 body,
                                 sent_at,
@@ -506,48 +511,56 @@ fn seed_channels() -> Vec<(i64, &'static str, ChannelKind)> {
 fn seed_messages() -> Vec<Message> {
     vec![
         Message {
+            id: 0,
             author: "mara".to_string(),
             body: "Shipping the new hotkey flow now.".to_string(),
             sent_at: "09:12".to_string(),
             channel_id: 1,
         },
         Message {
+            id: 0,
             author: "devin".to_string(),
             body: "Latency on local echo is <100ms.".to_string(),
             sent_at: "09:13".to_string(),
             channel_id: 1,
         },
         Message {
+            id: 0,
             author: "sasha".to_string(),
             body: "Message search index warmed on startup.".to_string(),
             sent_at: "09:15".to_string(),
             channel_id: 1,
         },
         Message {
+            id: 0,
             author: "you".to_string(),
             body: "Feels fast. Let's keep it lean.".to_string(),
             sent_at: "09:18".to_string(),
             channel_id: 1,
         },
         Message {
+            id: 0,
             author: "mara".to_string(),
             body: "Next: attachments + previews.".to_string(),
             sent_at: "09:21".to_string(),
             channel_id: 2,
         },
         Message {
+            id: 0,
             author: "devin".to_string(),
             body: "Profiling idle CPU now.".to_string(),
             sent_at: "09:24".to_string(),
             channel_id: 2,
         },
         Message {
+            id: 0,
             author: "mara".to_string(),
             body: "Can you sanity-check the build flags?".to_string(),
             sent_at: "09:26".to_string(),
             channel_id: 3,
         },
         Message {
+            id: 0,
             author: "devin".to_string(),
             body: "Want me to share flamegraph results?".to_string(),
             sent_at: "09:28".to_string(),
@@ -583,6 +596,18 @@ fn ensure_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             sent_at TEXT NOT NULL,
             channel_id INTEGER NOT NULL,
             FOREIGN KEY(channel_id) REFERENCES channels(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES messages(id)
         )",
         [],
     )?;
@@ -654,14 +679,15 @@ fn load_channels(conn: &Connection) -> Result<Vec<Channel>, rusqlite::Error> {
 
 fn load_messages(conn: &Connection, channel_id: i64) -> Result<Vec<Message>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT author, body, sent_at, channel_id FROM messages WHERE channel_id = ?1 ORDER BY id ASC",
+        "SELECT id, author, body, sent_at, channel_id FROM messages WHERE channel_id = ?1 ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([channel_id], |row| {
         Ok(Message {
-            author: row.get(0)?,
-            body: row.get(1)?,
-            sent_at: row.get(2)?,
-            channel_id: row.get(3)?,
+            id: row.get(0)?,
+            author: row.get(1)?,
+            body: row.get(2)?,
+            sent_at: row.get(3)?,
+            channel_id: row.get(4)?,
         })
     })?;
 
@@ -672,12 +698,12 @@ fn load_messages(conn: &Connection, channel_id: i64) -> Result<Vec<Message>, rus
     Ok(messages)
 }
 
-fn insert_message(conn: &Connection, message: &Message) -> Result<(), rusqlite::Error> {
+fn insert_message(conn: &Connection, message: &Message) -> Result<i64, rusqlite::Error> {
     conn.execute(
         "INSERT INTO messages (author, body, sent_at, channel_id) VALUES (?1, ?2, ?3, ?4)",
         params![message.author, message.body, message.sent_at, message.channel_id],
     )?;
-    Ok(())
+    Ok(conn.last_insert_rowid())
 }
 
 fn load_channel_members(
@@ -768,6 +794,28 @@ struct PresenceState {
     last_seen: Instant,
 }
 
+struct SearchRequest {
+    query: String,
+    channel_only: bool,
+}
+
+#[derive(Clone)]
+struct Attachment {
+    message_id: i64,
+    file_path: String,
+    file_name: String,
+    file_size: i64,
+    kind: String,
+}
+
+#[derive(Clone)]
+struct PendingAttachment {
+    file_path: String,
+    file_name: String,
+    file_size: i64,
+    kind: String,
+}
+
 struct App {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -789,6 +837,15 @@ struct App {
     realtime: RealtimeClient,
     channel_members: HashMap<i64, HashSet<String>>,
     presence_state: HashMap<String, PresenceState>,
+    search_query: String,
+    search_last_query: String,
+    search_results: Vec<Message>,
+    search_channel_only: bool,
+    search_last_channel_only: bool,
+    message_attachments: HashMap<i64, Vec<Attachment>>,
+    attachment_path_drafts: HashMap<i64, String>,
+    pending_attachments: HashMap<i64, Vec<PendingAttachment>>,
+    attachment_error: Option<String>,
 }
 
 impl App {
@@ -898,6 +955,16 @@ impl App {
                     .collect()
             }
         };
+        let message_attachments = match load_attachments_for_message_ids(
+            &db,
+            &messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+        ) {
+            Ok(attachments) => attachments,
+            Err(err) => {
+                eprintln!("db attachments load error: {err}");
+                HashMap::new()
+            }
+        };
         let channel_members = match load_channel_members(&db, &channels) {
             Ok(members) => members,
             Err(err) => {
@@ -935,6 +1002,15 @@ impl App {
             realtime: RealtimeClient::new("ws://127.0.0.1:9001".to_string()),
             channel_members,
             presence_state,
+            search_query: String::new(),
+            search_last_query: String::new(),
+            search_results: Vec::new(),
+            search_channel_only: true,
+            search_last_channel_only: true,
+            message_attachments,
+            attachment_path_drafts: HashMap::new(),
+            pending_attachments: HashMap::new(),
+            attachment_error: None,
         }
     }
 
@@ -964,7 +1040,10 @@ impl App {
         }
         let raw_input = self.egui_state.take_egui_input(self.window.as_ref());
         let mut pending_send: Option<String> = None;
+        let mut pending_attachments_send = Vec::new();
         let mut channel_switch: Option<i64> = None;
+        let mut search_request: Option<SearchRequest> = None;
+        let mut search_clear = false;
         let egui_ctx = self.egui_ctx.clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::SidePanel::left("channel_list")
@@ -1090,7 +1169,70 @@ impl App {
                     );
                 }
                 ui.separator();
-                for message in &self.messages {
+                ui.horizontal(|row| {
+                    row.label("Search");
+                    let search_box = row.add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text("Search messages")
+                            .desired_width(240.0),
+                    );
+                    let search_enter = search_box.has_focus()
+                        && row.input(|input| input.key_pressed(egui::Key::Enter));
+                    if row.button("Go").clicked() || search_enter {
+                        let trimmed = self.search_query.trim();
+                        if !trimmed.is_empty() {
+                            search_request = Some(SearchRequest {
+                                query: trimmed.to_string(),
+                                channel_only: self.search_channel_only,
+                            });
+                        }
+                    }
+                    row.checkbox(&mut self.search_channel_only, "This channel");
+                    if row.button("Clear").clicked() {
+                        search_clear = true;
+                    }
+                });
+                if self.search_query.trim().is_empty() {
+                    ui.label(
+                        egui::RichText::new("Search by author or text.")
+                            .small()
+                            .color(egui::Color32::from_rgb(120, 130, 150)),
+                    );
+                } else if self.search_last_query == self.search_query.trim()
+                    && self.search_last_channel_only == self.search_channel_only
+                {
+                    ui.label(
+                        egui::RichText::new(format!("Results: {}", self.search_results.len()))
+                            .small()
+                            .color(egui::Color32::from_rgb(120, 130, 150)),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("Press Enter to search.")
+                            .small()
+                            .color(egui::Color32::from_rgb(120, 130, 150)),
+                    );
+                }
+                ui.separator();
+                let show_search_results =
+                    !self.search_query.trim().is_empty()
+                        && self.search_last_query == self.search_query.trim()
+                        && self.search_last_channel_only == self.search_channel_only;
+                let show_channel =
+                    show_search_results && !self.search_channel_only;
+                let messages = if show_search_results {
+                    &self.search_results
+                } else {
+                    &self.messages
+                };
+                if show_search_results && messages.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No matches found.")
+                            .small()
+                            .color(egui::Color32::from_rgb(160, 170, 190)),
+                    );
+                }
+                for message in messages {
                     ui.horizontal(|row| {
                         row.label(
                             egui::RichText::new(&message.author)
@@ -1101,8 +1243,41 @@ impl App {
                             egui::RichText::new(&message.sent_at)
                                 .color(egui::Color32::from_rgb(140, 150, 170)),
                         );
+                        if show_channel {
+                            row.label(
+                                egui::RichText::new(self.channel_label(message.channel_id))
+                                    .small()
+                                    .color(egui::Color32::from_rgb(140, 150, 170)),
+                            );
+                        }
                         row.label(&message.body);
                     });
+                    if let Some(attachments) = self.message_attachments.get(&message.id) {
+                        for attachment in attachments {
+                            ui.horizontal(|row| {
+                                row.label(
+                                    egui::RichText::new("[attachment]")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(120, 130, 150)),
+                                );
+                                row.label(
+                                    egui::RichText::new(&attachment.file_name)
+                                        .small()
+                                        .color(egui::Color32::from_rgb(190, 200, 215)),
+                                )
+                                .on_hover_text(&attachment.file_path);
+                                row.label(
+                                    egui::RichText::new(format!(
+                                        "{} • {}",
+                                        attachment.kind,
+                                        format_bytes(attachment.file_size)
+                                    ))
+                                    .small()
+                                    .color(egui::Color32::from_rgb(120, 130, 150)),
+                                );
+                            });
+                        }
+                    }
                     ui.add_space(2.0);
                 }
                 ui.separator();
@@ -1133,6 +1308,69 @@ impl App {
                         .small()
                         .color(egui::Color32::from_rgb(140, 150, 170)),
                 );
+                let attachment_path = self
+                    .attachment_path_drafts
+                    .entry(self.selected_channel_id)
+                    .or_default();
+                let pending_list = self
+                    .pending_attachments
+                    .entry(self.selected_channel_id)
+                    .or_default();
+                ui.horizontal(|row| {
+                    row.label("Attach");
+                    row.add(
+                        egui::TextEdit::singleline(attachment_path)
+                            .hint_text("Path to file")
+                            .desired_width(320.0),
+                    );
+                    if row.button("Add").clicked() {
+                        let trimmed = attachment_path.trim();
+                        if trimmed.is_empty() {
+                            self.attachment_error = Some("Attachment path is empty.".to_string());
+                        } else {
+                            match ingest_attachment(trimmed) {
+                                Ok(attachment) => {
+                                    pending_list.push(attachment);
+                                    attachment_path.clear();
+                                    self.attachment_error = None;
+                                }
+                                Err(err) => {
+                                    self.attachment_error = Some(err);
+                                }
+                            }
+                        }
+                    }
+                });
+                let mut remove_attachment: Option<usize> = None;
+                for (idx, attachment) in pending_list.iter().enumerate() {
+                    ui.horizontal(|row| {
+                        row.label(
+                            egui::RichText::new(format!(
+                                "{} ({}, {})",
+                                attachment.file_name,
+                                format_bytes(attachment.file_size),
+                                attachment.kind
+                            ))
+                            .small()
+                            .color(egui::Color32::from_rgb(160, 170, 190)),
+                        );
+                        if row.button("Remove").clicked() {
+                            remove_attachment = Some(idx);
+                        }
+                    });
+                }
+                if let Some(idx) = remove_attachment {
+                    if idx < pending_list.len() {
+                        pending_list.remove(idx);
+                    }
+                }
+                if let Some(error) = &self.attachment_error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                    );
+                }
                 ui.horizontal(|row| {
                     let composer = row.add(
                         egui::TextEdit::singleline(draft)
@@ -1160,8 +1398,10 @@ impl App {
                     }
                     if send_now {
                         let body = draft.trim().to_string();
-                        if !body.is_empty() {
+                        if !body.is_empty() || !pending_list.is_empty() {
                             pending_send = Some(body);
+                            pending_attachments_send = pending_list.clone();
+                            pending_list.clear();
                             draft.clear();
                             self.typing_state.remove(&self.selected_channel_id);
                             self.composer_focus_requested = true;
@@ -1261,33 +1501,164 @@ impl App {
                         Vec::new()
                     }
                 };
+                self.message_attachments = match load_attachments_for_message_ids(
+                    &self.db,
+                    &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+                ) {
+                    Ok(attachments) => attachments,
+                    Err(err) => {
+                        eprintln!("db attachments load error: {err}");
+                        HashMap::new()
+                    }
+                };
                 self.composer_focus_requested = true;
+                if self.search_channel_only && !self.search_query.trim().is_empty() {
+                    let query = self.search_query.trim().to_string();
+                    match search_messages(&self.db, &query, Some(channel_id)) {
+                        Ok(results) => {
+                            self.search_last_query = query;
+                            self.search_last_channel_only = true;
+                            self.search_results = results;
+                            self.message_attachments = match load_attachments_for_message_ids(
+                                &self.db,
+                                &self
+                                    .search_results
+                                    .iter()
+                                    .map(|message| message.id)
+                                    .collect::<Vec<_>>(),
+                            ) {
+                                Ok(attachments) => attachments,
+                                Err(err) => {
+                                    eprintln!("db attachments load error: {err}");
+                                    HashMap::new()
+                                }
+                            };
+                        }
+                        Err(err) => {
+                            eprintln!("db search error: {err}");
+                            self.search_last_query.clear();
+                            self.search_last_channel_only = self.search_channel_only;
+                            self.search_results.clear();
+                        }
+                    }
+                }
+            }
+        }
+
+        if search_clear {
+            self.search_query.clear();
+            self.search_last_query.clear();
+            self.search_last_channel_only = self.search_channel_only;
+            self.search_results.clear();
+            self.message_attachments = match load_attachments_for_message_ids(
+                &self.db,
+                &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+            ) {
+                Ok(attachments) => attachments,
+                Err(err) => {
+                    eprintln!("db attachments load error: {err}");
+                    HashMap::new()
+                }
+            };
+        }
+
+        if let Some(request) = search_request {
+            let query = request.query;
+            let channel_filter = if request.channel_only {
+                Some(self.selected_channel_id)
+            } else {
+                None
+            };
+            match search_messages(&self.db, &query, channel_filter) {
+                Ok(results) => {
+                    self.search_last_query = query;
+                    self.search_last_channel_only = request.channel_only;
+                    self.search_results = results;
+                    self.message_attachments = match load_attachments_for_message_ids(
+                        &self.db,
+                        &self
+                            .search_results
+                            .iter()
+                            .map(|message| message.id)
+                            .collect::<Vec<_>>(),
+                    ) {
+                        Ok(attachments) => attachments,
+                        Err(err) => {
+                            eprintln!("db attachments load error: {err}");
+                            HashMap::new()
+                        }
+                    };
+                }
+                Err(err) => {
+                    eprintln!("db search error: {err}");
+                    self.search_last_query.clear();
+                    self.search_last_channel_only = request.channel_only;
+                    self.search_results.clear();
+                }
             }
         }
 
         if let Some(body) = pending_send {
-            let message = Message {
+            let content = if body.is_empty() && !pending_attachments_send.is_empty() {
+                "Attachment".to_string()
+            } else {
+                body
+            };
+            let mut message = Message {
+                id: 0,
                 author: "you".to_string(),
-                body,
+                body: content,
                 sent_at: format_timestamp_utc(),
                 channel_id: self.selected_channel_id,
             };
-            if let Err(err) = insert_message(&self.db, &message) {
-                eprintln!("db insert error: {err}");
+            match insert_message(&self.db, &message) {
+                Ok(id) => {
+                    message.id = id;
+                    if !pending_attachments_send.is_empty() {
+                        if let Err(err) = insert_attachments(
+                            &mut self.db,
+                            message.id,
+                            &pending_attachments_send,
+                        ) {
+                            eprintln!("db attachments insert error: {err}");
+                        }
+                        self.message_attachments
+                            .entry(message.id)
+                            .or_default()
+                            .extend(pending_attachments_send.into_iter().map(|pending| {
+                                Attachment {
+                                    message_id: message.id,
+                                    file_path: pending.file_path,
+                                    file_name: pending.file_name,
+                                    file_size: pending.file_size,
+                                    kind: pending.kind,
+                                }
+                            }));
+                    }
+                    self.track_member(&message);
+                    self.messages.push(message);
+                    self.realtime.send_message(self.messages.last().expect("message"));
+                }
+                Err(err) => {
+                    eprintln!("db insert error: {err}");
+                }
             }
-            self.track_member(&message);
-            self.messages.push(message);
-            self.realtime.send_message(self.messages.last().expect("message"));
         }
 
         if !incoming.is_empty() {
             for message in incoming {
-                if let Err(err) = insert_message(&self.db, &message) {
-                    eprintln!("db insert error: {err}");
+                let mut incoming_message = message;
+                match insert_message(&self.db, &incoming_message) {
+                    Ok(id) => {
+                        incoming_message.id = id;
+                    }
+                    Err(err) => {
+                        eprintln!("db insert error: {err}");
+                    }
                 }
-                self.track_member(&message);
-                if message.channel_id == self.selected_channel_id {
-                    self.messages.push(message);
+                self.track_member(&incoming_message);
+                if incoming_message.channel_id == self.selected_channel_id {
+                    self.messages.push(incoming_message);
                 }
             }
         }
@@ -1295,6 +1666,17 @@ impl App {
 }
 
 impl App {
+    fn channel_label(&self, channel_id: i64) -> String {
+        self.channels
+            .iter()
+            .find(|channel| channel.id == channel_id)
+            .map(|channel| match channel.kind {
+                ChannelKind::Channel => format!("#{}", channel.name),
+                ChannelKind::DirectMessage => format!("@{}", channel.name),
+            })
+            .unwrap_or_else(|| format!("#{}", channel_id))
+    }
+
     fn track_member(&mut self, message: &Message) {
         self.channel_members
             .entry(message.channel_id)
@@ -1355,6 +1737,172 @@ impl App {
             }
         }
     }
+}
+
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn search_messages(
+    conn: &Connection,
+    query: &str,
+    channel_id: Option<i64>,
+) -> Result<Vec<Message>, rusqlite::Error> {
+    let escaped = escape_like(query);
+    let pattern = format!("%{}%", escaped);
+    let mut messages = Vec::new();
+    if let Some(channel_id) = channel_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, author, body, sent_at, channel_id
+            FROM messages
+            WHERE channel_id = ?1
+              AND (author LIKE ?2 ESCAPE '\\' OR body LIKE ?2 ESCAPE '\\')
+            ORDER BY id DESC
+            LIMIT 200",
+        )?;
+        let rows = stmt.query_map(params![channel_id, pattern], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                author: row.get(1)?,
+                body: row.get(2)?,
+                sent_at: row.get(3)?,
+                channel_id: row.get(4)?,
+            })
+        })?;
+        for message in rows {
+            messages.push(message?);
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, author, body, sent_at, channel_id
+            FROM messages
+            WHERE author LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\'
+            ORDER BY id DESC
+            LIMIT 200",
+        )?;
+        let rows = stmt.query_map([pattern], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                author: row.get(1)?,
+                body: row.get(2)?,
+                sent_at: row.get(3)?,
+                channel_id: row.get(4)?,
+            })
+        })?;
+        for message in rows {
+            messages.push(message?);
+        }
+    }
+    Ok(messages)
+}
+
+fn insert_attachments(
+    conn: &mut Connection,
+    message_id: i64,
+    attachments: &[PendingAttachment],
+) -> Result<(), rusqlite::Error> {
+    let tx = conn.transaction()?;
+    for attachment in attachments {
+        tx.execute(
+            "INSERT INTO attachments (message_id, file_path, file_name, file_size, kind)
+            VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                message_id,
+                attachment.file_path,
+                attachment.file_name,
+                attachment.file_size,
+                attachment.kind
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn load_attachments_for_message_ids(
+    conn: &Connection,
+    message_ids: &[i64],
+) -> Result<HashMap<i64, Vec<Attachment>>, rusqlite::Error> {
+    if message_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(message_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let query = format!(
+        "SELECT message_id, file_path, file_name, file_size, kind
+        FROM attachments
+        WHERE message_id IN ({placeholders})
+        ORDER BY id ASC"
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map(params_from_iter(message_ids.iter().copied()), |row| {
+        Ok(Attachment {
+            message_id: row.get(0)?,
+            file_path: row.get(1)?,
+            file_name: row.get(2)?,
+            file_size: row.get(3)?,
+            kind: row.get(4)?,
+        })
+    })?;
+    let mut map: HashMap<i64, Vec<Attachment>> = HashMap::new();
+    for attachment in rows {
+        let attachment = attachment?;
+        map.entry(attachment.message_id)
+            .or_default()
+            .push(attachment);
+    }
+    Ok(map)
+}
+
+fn ingest_attachment(path: &str) -> Result<PendingAttachment, String> {
+    let metadata = fs::metadata(path).map_err(|err| format!("File error: {err}"))?;
+    let file_name = file_name_from_path(path);
+    let file_size = metadata.len() as i64;
+    let kind = detect_attachment_kind(path).to_string();
+    Ok(PendingAttachment {
+        file_path: path.to_string(),
+        file_name,
+        file_size,
+        kind,
+    })
+}
+
+fn file_name_from_path(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn detect_attachment_kind(path: &str) -> &'static str {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
+        "pdf" | "txt" | "md" | "doc" | "docx" | "rtf" => "document",
+        _ => "file",
+    }
+}
+
+fn format_bytes(size: i64) -> String {
+    let size = size as f64;
+    let units = ["B", "KB", "MB", "GB"];
+    let mut value = size;
+    let mut idx = 0;
+    while value >= 1024.0 && idx < units.len() - 1 {
+        value /= 1024.0;
+        idx += 1;
+    }
+    format!("{value:.1}{}", units[idx])
 }
 
 fn main() {

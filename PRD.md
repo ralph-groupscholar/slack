@@ -22,6 +22,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Added a local mock WebSocket server binary that echoes/broadcasts messages for integration testing (`src/bin/mock_server.rs`).
 - Defined a realtime sync contract with auth/ack/presence payloads and wired mock server + client handling (`src/main.rs`, `src/bin/mock_server.rs`).
 - Added realtime presence tracking state with channel/DM presence UI summaries and member counts (`src/main.rs`).
+- Added a SQLite-backed message search bar with channel-scoped filtering and search results rendering (`src/main.rs`).
+- Added file attachment ingestion from local paths, persisted attachment metadata, and rendered attachment previews (`src/main.rs`).
 
 ## Core Requirements
 
