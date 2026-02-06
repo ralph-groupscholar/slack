@@ -165,3 +165,10 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Measure startup baseline again and target the next biggest startup contributors.
+
+## Iteration 28 - February 6, 2026
+
+**Built:** Deferred initial message loading to a background thread and added a loading state while messages hydrate.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup/memory benchmarks to confirm the impact and pick the next biggest startup contributors.
