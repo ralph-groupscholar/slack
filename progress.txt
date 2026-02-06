@@ -340,3 +340,17 @@
 **Performance:** Startup: not measured, Memory: not measured
 **Files changed:** src/main.rs, PRD.md, progress.txt
 **Next:** Identify and trim the next cold-start bottleneck to reach <200ms.
+
+## Iteration 53 - February 6, 2026
+
+**Built:** Switched wgpu adapter power preference to LowPower to favor faster cold start.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, PRD.md, progress.txt
+**Next:** Re-run startup benchmarks to see if cold start improves toward <200ms.
+
+## Iteration 54 - February 6, 2026
+
+**Built:** Re-ran startup benchmarks after switching to LowPower adapter preference and recorded updated results.
+**Performance:** Startup p50 209.63ms, p95 329.22ms; Memory: not measured
+**Files changed:** BENCHMARKS.md, PRD.md, progress.txt
+**Next:** Identify the next cold-start bottleneck to reach <200ms.

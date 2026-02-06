@@ -55,6 +55,8 @@ Create a blazingly fast team communication app that prioritizes instant startup,
 - Deferred the background hydrate thread until after the first frame renders to reduce cold-start work (`src/main.rs`).
 - Re-ran startup benchmarks after the deferred hydrate change (startup p50 218.37ms, p95 411.36ms) and refreshed `BENCHMARKS.md`.
 - Added inline rich text rendering for message bodies with bold/italic/code formatting (`src/main.rs`).
+- Switched wgpu adapter power preference to LowPower to favor faster startup on macOS (`src/main.rs`).
+- Re-ran startup benchmarks after the LowPower adapter change (startup p50 209.63ms, p95 329.22ms) and refreshed `BENCHMARKS.md`.
 
 ## Core Requirements
 
