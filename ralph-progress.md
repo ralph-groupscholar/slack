@@ -13,3 +13,8 @@
 - Added message reaction UI with emoji counts and toggle support.
 - Wired reaction persistence/loading for channel switches, searches, and deferred loads.
 - Surface reaction action errors inline for quick feedback.
+
+## Iteration 85 (2026-02-08)
+- Added persisted per-channel draft storage in SQLite with load/save/delete helpers.
+- Load drafts during deferred DB boot and restore them into the composer state.
+- Persist draft changes and clear drafts on send to keep composer state synced.
