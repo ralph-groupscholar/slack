@@ -382,3 +382,10 @@
 **Performance:** Idle CPU avg 3.53%
 **Files changed:** src/main.rs, BENCHMARKS.md, PRD.md, progress.txt
 **Next:** Reduce idle CPU toward <1% and re-run startup benchmarks to confirm <200ms cold start.
+
+## Iteration 59 - February 8, 2026
+
+**Built:** Clamped idle repaint delay to avoid high-frequency redraws when there is no input or state change.
+**Performance:** Startup: not measured, Memory: not measured
+**Files changed:** src/main.rs, progress.txt, ralph-progress.md
+**Next:** Re-run idle CPU benchmark to see if we hit <1% and adjust repaint policy if needed.
