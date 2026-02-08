@@ -14,6 +14,11 @@
 - Wired reaction persistence/loading for channel switches, searches, and deferred loads.
 - Surface reaction action errors inline for quick feedback.
 
+## Iteration 83 (2026-02-08)
+- Added pinned message support with a new SQLite table, seed data, and load pipeline.
+- Added per-channel pinned-only filtering alongside saved message filters.
+- Wired pin/unpin controls with inline error feedback.
+
 ## Iteration 85 (2026-02-08)
 - Added persisted per-channel draft storage in SQLite with load/save/delete helpers.
 - Load drafts during deferred DB boot and restore them into the composer state.

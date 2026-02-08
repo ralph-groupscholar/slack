@@ -10,6 +10,7 @@ A blazingly fast, native team communication app built in Rust. Think "Ghostty fo
 - **Rich Text** — inline bold, italic, and code formatting in message bodies
 - **File Attachments** — attach local files, persist metadata, and preview image thumbnails with async background decoding
 - **Search** — SQLite-backed message search with per-channel scoping
+- **Saved + Pinned Messages** — star and pin key updates, with per-channel filters
 - **Presence & Typing Indicators** — real-time online/away status and per-channel typing state
 - **Mock Server** — bundled WebSocket echo/broadcast server for local development and integration testing
 
