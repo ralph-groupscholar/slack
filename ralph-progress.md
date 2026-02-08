@@ -1,6 +1,6 @@
-# Ralph Progress Log
+# Ralph Slack Progress
 
-## Iteration 59 - February 8, 2026
-
-- Clamped idle repaint delay when there are no input events or state changes to reduce idle CPU usage.
-- Updated repaint scheduling to avoid high-frequency redraws from egui-driven animations.
+## Iteration 45 (2026-02-08)
+- Added saved-message support with a new SQLite table, seed data, and load pipeline.
+- Added UI toggles to save/unsave messages and filter the current channel to saved-only.
+- Wired saved state updates with inline error handling in the UI.
