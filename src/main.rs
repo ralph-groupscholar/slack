@@ -656,6 +656,8 @@ const THUMBNAIL_CACHE_LIMIT: usize = 24;
 const THUMBNAIL_ERROR_LIMIT: usize = 24;
 const IDLE_REPAINT_DELAY: Duration = Duration::from_secs(1);
 const BACKGROUND_REPAINT_DELAY: Duration = Duration::from_secs(5);
+const REACTION_EMOJIS: [&str; 3] = ["👍", "🎉", "❤️"];
+const CURRENT_USER: &str = "You";
 
 fn format_timestamp_utc() -> String {
     let now = SystemTime::now()
@@ -911,7 +913,8 @@ fn remove_reaction(
     author: &str,
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
-        "DELETE FROM message_reactions WHERE message_id = ?1 AND emoji = ?2 AND author = ?3",
+        "DELETE FROM message_reactions
+        WHERE message_id = ?1 AND emoji = ?2 AND author = ?3 COLLATE NOCASE",
         params![message_id, emoji, author],
     )?;
     Ok(())
@@ -1249,11 +1252,13 @@ impl App {
             saved_messages: HashSet::new(),
             show_saved_only: false,
             message_attachments: HashMap::new(),
+            message_reactions: HashMap::new(),
             attachment_path_drafts: HashMap::new(),
             pending_attachments: HashMap::new(),
             attachment_error: None,
             attachment_action_error: None,
             saved_action_error: None,
+            reaction_action_error: None,
             attachment_thumbnails: HashMap::new(),
             attachment_thumbnail_errors: HashMap::new(),
             thumbnail_cache_order: VecDeque::new(),
@@ -1320,6 +1325,7 @@ impl App {
         let mut realtime_connect = false;
         let mut realtime_disconnect = false;
         let mut saved_toggle: Option<i64> = None;
+        let mut reaction_toggle: Option<(i64, String, bool)> = None;
         let egui_ctx = self.egui_ctx.clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::SidePanel::left("channel_list")
@@ -1596,6 +1602,51 @@ impl App {
                             body_ui.spacing_mut().item_spacing = original_spacing;
                         });
                     });
+                    ui.horizontal(|row| {
+                        row.label(
+                            egui::RichText::new("Reactions")
+                                .small()
+                                .color(egui::Color32::from_rgb(120, 130, 150)),
+                        );
+                        let mut counts: HashMap<String, usize> = HashMap::new();
+                        let mut user_reactions: HashSet<String> = HashSet::new();
+                        if let Some(reactions) = self.message_reactions.get(&message.id) {
+                            for reaction in reactions {
+                                *counts.entry(reaction.emoji.clone()).or_insert(0) += 1;
+                                if reaction.author.eq_ignore_ascii_case("you") {
+                                    user_reactions.insert(reaction.emoji.clone());
+                                }
+                            }
+                        }
+                        for emoji in REACTION_EMOJIS.iter().copied() {
+                            let count = counts.get(emoji).copied().unwrap_or(0);
+                            let label = if count > 0 {
+                                format!("{emoji} {count}")
+                            } else {
+                                emoji.to_string()
+                            };
+                            let reacted = user_reactions.contains(emoji);
+                            let text = if reacted {
+                                egui::RichText::new(label)
+                                    .color(egui::Color32::from_rgb(230, 210, 140))
+                            } else {
+                                egui::RichText::new(label)
+                                    .color(egui::Color32::from_rgb(170, 180, 200))
+                            };
+                            if row
+                                .add(egui::Button::new(text))
+                                .on_hover_text(if reacted {
+                                    "Remove reaction"
+                                } else {
+                                    "Add reaction"
+                                })
+                                .clicked()
+                            {
+                                reaction_toggle =
+                                    Some((message.id, emoji.to_string(), reacted));
+                            }
+                        }
+                    });
                     if let Some(attachments) = self.message_attachments.get(&message.id) {
                         for attachment in attachments {
                             if attachment.kind == "image" {
@@ -1698,6 +1749,13 @@ impl App {
                     );
                 }
                 if let Some(error) = &self.saved_action_error {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                    );
+                }
+                if let Some(error) = &self.reaction_action_error {
                     ui.label(
                         egui::RichText::new(error)
                             .small()
@@ -1972,6 +2030,16 @@ impl App {
                         HashMap::new()
                     }
                 };
+                self.message_reactions = match load_reactions_for_message_ids(
+                    &self.db,
+                    &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+                ) {
+                    Ok(reactions) => reactions,
+                    Err(err) => {
+                        eprintln!("db reactions load error: {err}");
+                        HashMap::new()
+                    }
+                };
                 self.composer_focus_requested = true;
                 if self.search_channel_only && !self.search_query.trim().is_empty() {
                     let query = self.search_query.trim().to_string();
@@ -1991,6 +2059,20 @@ impl App {
                                 Ok(attachments) => attachments,
                                 Err(err) => {
                                     eprintln!("db attachments load error: {err}");
+                                    HashMap::new()
+                                }
+                            };
+                            self.message_reactions = match load_reactions_for_message_ids(
+                                &self.db,
+                                &self
+                                    .search_results
+                                    .iter()
+                                    .map(|message| message.id)
+                                    .collect::<Vec<_>>(),
+                            ) {
+                                Ok(reactions) => reactions,
+                                Err(err) => {
+                                    eprintln!("db reactions load error: {err}");
                                     HashMap::new()
                                 }
                             };
@@ -2032,6 +2114,49 @@ impl App {
             }
         }
 
+        if let Some((message_id, emoji, reacted)) = reaction_toggle {
+            if reacted {
+                match remove_reaction(&self.db, message_id, &emoji, "you") {
+                    Ok(()) => {
+                        if let Some(reactions) = self.message_reactions.get_mut(&message_id) {
+                            reactions.retain(|reaction| {
+                                !(reaction.emoji == emoji
+                                    && reaction.author.eq_ignore_ascii_case("you"))
+                            });
+                            if reactions.is_empty() {
+                                self.message_reactions.remove(&message_id);
+                            }
+                        }
+                        self.reaction_action_error = None;
+                    }
+                    Err(err) => {
+                        self.reaction_action_error =
+                            Some(format!("Could not remove reaction: {err}"));
+                    }
+                }
+            } else {
+                let reacted_at = format_timestamp_utc();
+                match add_reaction(&self.db, message_id, &emoji, "you", &reacted_at) {
+                    Ok(()) => {
+                        self.message_reactions
+                            .entry(message_id)
+                            .or_default()
+                            .push(MessageReaction {
+                                message_id,
+                                emoji,
+                                author: "you".to_string(),
+                                reacted_at,
+                            });
+                        self.reaction_action_error = None;
+                    }
+                    Err(err) => {
+                        self.reaction_action_error =
+                            Some(format!("Could not add reaction: {err}"));
+                    }
+                }
+            }
+        }
+
         if search_clear {
             self.search_query.clear();
             self.search_last_query.clear();
@@ -2045,6 +2170,16 @@ impl App {
                     Ok(attachments) => attachments,
                     Err(err) => {
                         eprintln!("db attachments load error: {err}");
+                        HashMap::new()
+                    }
+                };
+                self.message_reactions = match load_reactions_for_message_ids(
+                    &self.db,
+                    &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+                ) {
+                    Ok(reactions) => reactions,
+                    Err(err) => {
+                        eprintln!("db reactions load error: {err}");
                         HashMap::new()
                     }
                 };
@@ -2075,6 +2210,20 @@ impl App {
                             Ok(attachments) => attachments,
                             Err(err) => {
                                 eprintln!("db attachments load error: {err}");
+                                HashMap::new()
+                            }
+                        };
+                        self.message_reactions = match load_reactions_for_message_ids(
+                            &self.db,
+                            &self
+                                .search_results
+                                .iter()
+                                .map(|message| message.id)
+                                .collect::<Vec<_>>(),
+                        ) {
+                            Ok(reactions) => reactions,
+                            Err(err) => {
+                                eprintln!("db reactions load error: {err}");
                                 HashMap::new()
                             }
                         };
@@ -2223,6 +2372,7 @@ impl App {
                         attachments: HashMap::new(),
                         channel_members: HashMap::new(),
                         saved_messages: HashSet::new(),
+                        message_reactions: HashMap::new(),
                         db_ready: false,
                     });
                     let _ = event_proxy.send_event(UserEvent::Wake);
@@ -2242,6 +2392,9 @@ impl App {
             }
             if let Err(err) = seed_saved_messages_if_empty(&mut db) {
                 eprintln!("db seed saved error (deferred): {err}");
+            }
+            if let Err(err) = seed_reactions_if_empty(&mut db) {
+                eprintln!("db seed reactions error (deferred): {err}");
             }
             let channels = match load_channels(&db) {
                 Ok(channels) if !channels.is_empty() => channels,
@@ -2275,6 +2428,13 @@ impl App {
                     HashMap::new()
                 }
             };
+            let message_reactions = match load_reactions_for_message_ids(&db, &message_ids) {
+                Ok(reactions) => reactions,
+                Err(err) => {
+                    eprintln!("db reactions load error (deferred): {err}");
+                    HashMap::new()
+                }
+            };
             let channel_members = match load_channel_members(&db, &channels) {
                 Ok(members) => members,
                 Err(err) => {
@@ -2296,6 +2456,7 @@ impl App {
                 attachments,
                 channel_members,
                 saved_messages,
+                message_reactions,
                 db_ready,
             });
             let _ = event_proxy.send_event(UserEvent::Wake);
@@ -2397,6 +2558,7 @@ impl App {
             if result.channel_id == self.selected_channel_id {
                 self.messages = result.messages;
                 self.message_attachments = result.attachments;
+                self.message_reactions = result.message_reactions;
                 self.messages_loaded = true;
                 changed = true;
             } else if self.selected_channel_id != selected_before {
@@ -2415,6 +2577,16 @@ impl App {
                     Ok(attachments) => attachments,
                     Err(err) => {
                         eprintln!("db attachments load error: {err}");
+                        HashMap::new()
+                    }
+                };
+                self.message_reactions = match load_reactions_for_message_ids(
+                    &self.db,
+                    &self.messages.iter().map(|message| message.id).collect::<Vec<_>>(),
+                ) {
+                    Ok(reactions) => reactions,
+                    Err(err) => {
+                        eprintln!("db reactions load error: {err}");
                         HashMap::new()
                     }
                 };
